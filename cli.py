@@ -8783,9 +8783,24 @@ class HermesCLI:
                             all_parts.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
+
+                # Normalize multimodal payloads: (text, images) tuples come from
+                # interrupt messages that contain pasted/attached images.
+                # Split text and images so we can combine text with join while
+                # preserving image attachments.
+                texts = []
+                images = []
+                for part in all_parts:
+                    if isinstance(part, tuple):
+                        texts.append(str(part[0]) if part else "")
+                        if len(part) > 1:
+                            images.extend(part[1])
+                    else:
+                        texts.append(str(part))
+
+                combined = ("\n".join(texts), images) if images else "\n".join(texts)
                 n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
+                preview = "\n".join(texts)[:50] + ("..." if len("\n".join(texts)) > 50 else "")
                 if n > 1:
                     print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
                 else:
