@@ -188,6 +188,7 @@ export const applyDisplay = (
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
 ) => {
   const d = cfg?.config?.display ?? {}
+  const t = cfg?.config?.tui ?? {}
 
   setBell(!!d.bell_on_complete)
 
@@ -207,6 +208,7 @@ export const applyDisplay = (
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
+    historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),
