@@ -899,6 +899,17 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        persist_session: bool = True,
+        # Detached / non-CLI invariants. Default values match the historical
+        # in-process initialization: depth 0, env-derived cwd, lazy hint
+        # tracker, no spinner, no progress callback. Detached entrypoints
+        # (research_job_runner, future cron / batch parents) override these
+        # to avoid the post-init patch block that the agent.factory module
+        # used to apply manually. See HRM-57.
+        delegate_depth: int = 0,
+        terminal_cwd: str | None = None,
+        cwd: str | None = None,
+        subdirectory_hints: Any = None,
     ):
         """
         Initialize the AI Agent.
@@ -1117,10 +1128,15 @@ class AIAgent:
         self._tool_worker_threads: set[int] = set()
         self._tool_worker_threads_lock = threading.Lock()
         
-        # Subagent delegation state
-        self._delegate_depth = 0        # 0 = top-level agent, incremented for children
-        self._active_children = []      # Running child AIAgents (for interrupt propagation)
+        # Subagent delegation state — caller may seed depth (HRM-57) for
+        # detached parents that simulate a top-level agent in a non-CLI flow.
+        self._delegate_depth = delegate_depth   # 0 = top-level agent, incremented for children
+        self._active_children = []              # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
+        # Spinner is normally attached during run_conversation; pre-init to
+        # None so detached parents that hand the agent off to delegate_task
+        # without ever entering an interactive loop don't AttributeError.
+        self._delegate_spinner = None
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -1965,9 +1981,18 @@ class AIAgent:
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
 
-        self._subdirectory_hints = SubdirectoryHintTracker(
-            working_dir=os.getenv("TERMINAL_CWD") or None,
-        )
+        # Detached parents (HRM-57) may pass subdirectory_hints=None or a
+        # pre-built tracker; otherwise build the env-derived default.
+        if subdirectory_hints is not None:
+            self._subdirectory_hints = subdirectory_hints
+        else:
+            self._subdirectory_hints = SubdirectoryHintTracker(
+                working_dir=terminal_cwd or os.getenv("TERMINAL_CWD") or None,
+            )
+        # terminal_cwd / cwd are exposed on the instance for delegate_task
+        # consumers; default to env-derived values when not passed.
+        self.terminal_cwd = terminal_cwd or os.getenv("TERMINAL_CWD") or os.getcwd()
+        self.cwd = cwd or os.getcwd()
         self._user_turn_count = 0
 
         # Cumulative token usage for the session
