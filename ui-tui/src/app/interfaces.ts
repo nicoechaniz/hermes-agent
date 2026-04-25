@@ -86,6 +86,7 @@ export interface UiState {
   busy: boolean
   compact: boolean
   detailsMode: DetailsMode
+  historyNavRequiresEmptyInput: boolean
   info: null | SessionInfo
   inlineDiffs: boolean
   mouseTracking: boolean
