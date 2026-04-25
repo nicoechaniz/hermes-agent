@@ -7621,15 +7621,6 @@ class AIAgent:
             elif fixed_temperature is not None:
                 api_kwargs["temperature"] = fixed_temperature
 
-        # Kimi Coding k2.6 requires exactly 0.6 on the coding endpoint.
-        from hermes_cli.models import kimi_coding_required_temperature
-        kimi_required_temp = kimi_coding_required_temperature(
-            self.model,
-            base_url=self.base_url,
-        )
-        if kimi_required_temp is not None:
-            api_kwargs["temperature"] = kimi_required_temp
-
         if self._is_qwen_portal():
             api_kwargs["metadata"] = {
                 "sessionId": self.session_id or "hermes",
@@ -10306,19 +10297,6 @@ class AIAgent:
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
-                    try:
-                        from hermes_cli.models import kimi_coding_required_temperature
-                    except Exception:
-                        kimi_coding_required_temperature = None
-                    if kimi_coding_required_temperature is not None:
-                        _temp = kimi_coding_required_temperature(
-                            self.model,
-                            base_url=self.base_url,
-                        )
-                        if _temp is not None:
-                            if "temperature" in api_kwargs:
-                                del api_kwargs["temperature"]
-                            api_kwargs["temperature"] = _temp
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
