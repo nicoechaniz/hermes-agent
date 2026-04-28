@@ -1407,6 +1407,17 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized in ("kimi-coding", "kimi-coding-cn"):
+            from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
+
+            creds = resolve_kimi_coding_runtime_credentials(
+                force_refresh=True,
+                allow_api_key_fallback=True,
+            )
+            if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
     except Exception as exc:
         logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
         return False
