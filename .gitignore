@@ -69,9 +69,9 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+models-dev-upstream/
 
 # Local project memory and session artifacts (never commit)
 MEMORY.md
 .codex
 hermes_conversation_*.json
-
