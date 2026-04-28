@@ -7444,6 +7444,22 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "setup":
+        name = args.profile_name
+        template = getattr(args, "template", None) or name
+        if template == "researcher":
+            from hermes_cli.researcher_scaffold import setup_researcher_profile
+            try:
+                print(f"\nSetting up '{name}' profile with researcher scaffold...")
+                setup_researcher_profile(name)
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+        else:
+            print(f"No scaffold template available for '{template}'.")
+            print("Available templates: researcher")
+            sys.exit(1)
+
     elif action == "delete":
         name = args.profile_name
         yes = getattr(args, "yes", False)
@@ -9859,6 +9875,16 @@ Examples:
     )
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"
+    )
+
+    profile_setup = profile_subparsers.add_parser(
+        "setup", help="Apply a scaffold template to an existing profile"
+    )
+    profile_setup.add_argument("profile_name", help="Profile to configure")
+    profile_setup.add_argument(
+        "--template",
+        metavar="TEMPLATE",
+        help="Scaffold template to apply (default: profile name). Available: researcher",
     )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")

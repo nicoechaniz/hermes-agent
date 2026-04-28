@@ -853,6 +853,11 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Opt-in: load the active profile's SOUL.md, AGENTS.md, and MEMORY.md
+    # into the child. Default False preserves the historical blank-slate
+    # behavior used by batch / data-generation callers; research workers
+    # set this to True so they inherit the curated researcher profile.
+    inherit_profile: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -980,9 +985,9 @@ def _build_child_agent(
         child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    effective_model = model or getattr(parent_agent, "model", None)
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
+    effective_base_url = override_base_url or getattr(parent_agent, "base_url", None)
     effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(
@@ -1036,8 +1041,8 @@ def _build_child_agent(
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
-        skip_context_files=True,
-        skip_memory=True,
+        skip_context_files=not inherit_profile,
+        skip_memory=not inherit_profile,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
@@ -1798,6 +1803,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    inherit_profile: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -1944,6 +1950,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                inherit_profile=inherit_profile,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
