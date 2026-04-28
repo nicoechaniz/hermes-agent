@@ -46,6 +46,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
   patchUiState({
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
+    detailsModeCommandOverride: false,
     historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: d.tui_mouse !== false,
