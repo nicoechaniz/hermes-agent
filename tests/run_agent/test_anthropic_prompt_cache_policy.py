@@ -89,14 +89,49 @@ class TestThirdPartyAnthropicGateway:
         assert should is True, "Third-party Anthropic gateway with Claude must cache"
         assert native is True, "Third-party Anthropic gateway uses native cache_control layout"
 
-    def test_third_party_without_claude_name_does_not_cache(self):
-        # A provider exposing e.g. GLM via anthropic_messages transport — we
-        # don't know whether it supports cache_control, so stay conservative.
+    def test_minimax_own_model_caches_with_native_layout(self):
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M2.7",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True
+        assert native is True
+
+    def test_minimax_cn_own_model_caches_with_native_layout(self):
+        agent = _make_agent(
+            provider="minimax-cn",
+            base_url="https://api.minimaxi.com/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M2.7",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True
+        assert native is True
+
+    def test_minimax_custom_endpoint_by_url_caches(self):
+        # Custom provider config pointing at MiniMax's Anthropic endpoint.
         agent = _make_agent(
             provider="custom",
             base_url="https://api.minimax.io/anthropic",
             api_mode="anthropic_messages",
-            model="minimax-m2.7",
+            model="MiniMax-M2.7",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True
+        assert native is True
+
+    def test_third_party_without_claude_name_does_not_cache(self):
+        # A generic provider exposing e.g. GLM via anthropic_messages transport
+        # — we don't know whether it supports cache_control for its own models,
+        # so stay conservative.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.glm.ai/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-5",
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 

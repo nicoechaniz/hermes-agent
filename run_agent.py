@@ -2791,11 +2791,13 @@ class AIAgent:
             OpenAI-wire proxies expect the looser layout).
 
         Third-party providers using the native Anthropic transport
-        (``api_mode == 'anthropic_messages'`` + Claude-named model) get
-        caching with the native layout so they benefit from the same
-        cost reduction as direct Anthropic callers, provided their
-        gateway implements the Anthropic cache_control contract
-        (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
+        (``api_mode == 'anthropic_messages'``) get caching with the
+        native layout when the model is Claude-named or the provider
+        is a known Anthropic-compatible gateway that documents
+        ``cache_control`` support for its own models (MiniMax).
+        LiteLLM proxies and Zhipu GLM also implement the contract
+        but are only enabled for Claude-named models until they
+        document cache support for their own model families.
 
         Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
         Alibaba (DashScope) also honour Anthropic-style ``cache_control``
@@ -2825,6 +2827,17 @@ class AIAgent:
             return True, False
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
+            return True, True
+
+        # MiniMax and MiniMax-CN use the native Anthropic protocol for
+        # their own models (MiniMax-M2.7, etc.) and document explicit
+        # cache_control support on their Anthropic-compatible endpoints.
+        # https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+        provider_is_minimax = provider_lower in ("minimax", "minimax-cn")
+        is_minimax_endpoint = base_url_hostname(eff_base_url) in (
+            "api.minimax.io", "api.minimaxi.com"
+        )
+        if is_anthropic_wire and (provider_is_minimax or is_minimax_endpoint):
             return True, True
 
         # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
