@@ -1378,3 +1378,135 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestProtectFirstNZero:
+    """ protect_first_n=0 means no literal head messages survive compression.
+
+    The system prompt (if present) is included in the summarised middle region
+    and the summary itself becomes the first message after compression.
+    """
+
+    def test_protect_first_n_zero_drops_all_head_messages(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Summary of everything"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                threshold_percent=0.50,
+                protect_first_n=0,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "system", "content": "You are a test assistant."},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(messages)
+
+        # System prompt should survive even with protect_first_n=0
+        assert result[0]["role"] == "system"
+        assert "You are a test assistant" in result[0]["content"]
+        # The summary comes next
+        assert result[1]["role"] in ("user", "assistant")
+        assert "Summary of everything" in result[1]["content"]
+        # Tail should still be present
+        assert result[-1]["content"] == "done"
+        assert result[-2]["content"] == "next"
+
+    def test_protect_first_n_zero_with_no_system_prompt(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                threshold_percent=0.50,
+                protect_first_n=0,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(messages)
+
+        assert "Summary" in result[0]["content"]
+        assert len(result) < len(messages)
+
+
+class TestCustomPromptOverrides:
+    """Custom preamble and template passed via constructor are used in place of defaults."""
+
+    def test_custom_preamble_and_template_used(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Custom summary result"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                summary_preamble="CUSTOM PREAMBLE",
+                summary_template="CUSTOM TEMPLATE with budget {summary_budget}",
+            )
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        kwargs = mock_call.call_args.kwargs
+        prompt = kwargs["messages"][0]["content"]
+        assert "CUSTOM PREAMBLE" in prompt
+        assert "CUSTOM TEMPLATE with budget" in prompt
+        # Make sure the budget placeholder was replaced with a number
+        assert "{summary_budget}" not in prompt
+
+    def test_empty_custom_prompt_falls_back_to_default(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Default summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                summary_preamble=None,
+                summary_template=None,
+            )
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        kwargs = mock_call.call_args.kwargs
+        prompt = kwargs["messages"][0]["content"]
+        assert "summarization agent creating a context checkpoint" in prompt
+        assert "## Active Task" in prompt

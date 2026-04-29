@@ -423,7 +423,11 @@ compression:
   enabled: true
   threshold: 0.50
   target_ratio: 0.20         # fraction of threshold to preserve as recent tail
+  protect_first_n: 3         # messages from start to keep (0 = summarize everything)
   protect_last_n: 20         # minimum recent messages to keep uncompressed
+  prompt:
+    preamble: ""             # optional custom summarizer preamble
+    template: ""             # optional custom summary template
 ```
 
 :::info Legacy migration

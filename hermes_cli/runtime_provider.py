@@ -23,6 +23,7 @@ from hermes_cli.auth import (
     resolve_codex_runtime_credentials,
     resolve_qwen_runtime_credentials,
     resolve_gemini_oauth_runtime_credentials,
+    resolve_kimi_coding_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,

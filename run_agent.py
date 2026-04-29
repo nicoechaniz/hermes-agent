@@ -1781,7 +1781,20 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+        compression_protect_first = int(_compression_cfg.get("protect_first_n", 3))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+
+        # Optional custom compression prompt overrides
+        _prompt_cfg = _compression_cfg.get("prompt", {})
+        if not isinstance(_prompt_cfg, dict):
+            _prompt_cfg = {}
+        compression_summary_preamble = _prompt_cfg.get("preamble") or None
+        compression_summary_template = _prompt_cfg.get("template") or None
+        # Strip whitespace so empty strings in YAML are treated as "not set"
+        if compression_summary_preamble and not compression_summary_preamble.strip():
+            compression_summary_preamble = None
+        if compression_summary_template and not compression_summary_template.strip():
+            compression_summary_template = None
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -1954,7 +1967,7 @@ class AIAgent:
             self.context_compressor = ContextCompressor(
                 model=self.model,
                 threshold_percent=compression_threshold,
-                protect_first_n=3,
+                protect_first_n=compression_protect_first,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
                 summary_model_override=None,
@@ -1964,6 +1977,8 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                summary_preamble=compression_summary_preamble,
+                summary_template=compression_summary_template,
             )
         self.compression_enabled = compression_enabled
 
