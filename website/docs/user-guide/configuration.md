@@ -602,8 +602,12 @@ compression:
   enabled: true                                     # Toggle compression on/off
   threshold: 0.50                                   # Compress at this % of context limit
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
+  protect_first_n: 3                                # Messages from start to keep (0 = summarize everything)
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
+  prompt:
+    preamble: ""                                    # Optional custom summarizer preamble
+    template: ""                                    # Optional custom summary template
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
