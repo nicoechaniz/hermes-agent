@@ -21346,6 +21346,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            # If a profile is active, override the cached system prompt so the
+            # agent does not load the global SOUL.md from SQLite session storage.
+            _profile_name = getattr(source, "profile", None)
+            if _profile_name and combined_ephemeral:
+                agent._cached_system_prompt = combined_ephemeral
+
             # Gate on needs_progress_queue (tool_progress OR thinking_progress)
             # rather than tool_progress alone: the progress_callback also relays
             # _thinking assistant scratch text, which is gated on
