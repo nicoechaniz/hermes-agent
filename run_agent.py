@@ -1056,6 +1056,17 @@ class AIAgent:
             # use a URL convention ending in /anthropic. Auto-detect these so the
             # Anthropic Messages API adapter is used instead of chat completions.
             self.api_mode = "anthropic_messages"
+        elif self.provider in ("minimax", "minimax-cn"):
+            # MiniMax serves its own models through an Anthropic-compatible endpoint.
+            # Default to anthropic_messages so prompt caching and other Anthropic
+            # features work out of the box.  Mirrors the runtime_provider.py logic.
+            self.api_mode = "anthropic_messages"
+            if not self.base_url:
+                self.base_url = (
+                    "https://api.minimax.io/anthropic"
+                    if self.provider == "minimax"
+                    else "https://api.minimaxi.com/anthropic"
+                )
         elif self.provider == "bedrock" or (
             self._base_url_hostname.startswith("bedrock-runtime.")
             and base_url_host_matches(self._base_url_lower, "amazonaws.com")
