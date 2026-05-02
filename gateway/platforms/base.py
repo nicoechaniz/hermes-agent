@@ -1833,6 +1833,10 @@ class MessageEvent:
     # particular key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Tool choice override for proactive/agentic turns (e.g. wake-up events).
+    # When set to "required", the agent MUST respond with a tool call.
+    tool_choice: Optional[str] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
