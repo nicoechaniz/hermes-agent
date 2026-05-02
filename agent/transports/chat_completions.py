@@ -421,6 +421,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        # Tool choice override for proactive/agentic turns
+        _tool_choice = params.get("tool_choice")
+        if _tool_choice:
+            api_kwargs["tool_choice"] = _tool_choice
+
         return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

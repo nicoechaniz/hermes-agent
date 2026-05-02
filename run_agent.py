@@ -8511,6 +8511,7 @@ class AIAgent:
             lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
+            tool_choice=getattr(self, "_tool_choice", None),
         )
 
     def _supports_reasoning_extra_body(self) -> bool:
@@ -10297,6 +10298,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        tool_choice: str = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -10350,6 +10352,7 @@ class AIAgent:
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
+        self._tool_choice = tool_choice
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.

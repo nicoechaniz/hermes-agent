@@ -12126,7 +12126,12 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(
+                    _run_message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                    tool_choice=getattr(event, "tool_choice", None),
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

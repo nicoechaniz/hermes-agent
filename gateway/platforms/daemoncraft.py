@@ -18,6 +18,7 @@ import logging
 import os
 import random
 import time
+import uuid
 from typing import Any, Dict, Optional, Set
 
 import aiohttp
@@ -25,7 +26,7 @@ from aiohttp import WSMsgType
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -300,115 +301,141 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def _handle_heartbeat_context(self, data: dict) -> None:
-        """Process a heartbeat_context from the agent_loop.
+        """Process heartbeat_context with two-level event architecture.
 
-        Injects world-state/perception into the gateway's AIAgent session.
-        The AIAgent decides if action is needed. If the response is empty
-        or just acknowledges with no substance, it is NOT sent to chat.
-        Only responses with actual content or tool-call intent go to Minecraft.
+        - Context-only updates: inject synthetic mc_perceive tool result silently
+          into the session_store. No LLM turn is forced.
+        - Wake-up events: inject synthetic tool result + force an agent turn with
+          tool_choice="required". The agent MUST react with a tool call (or mc_no_op).
         """
-        status = data.get("status") or {}
-        nearby = data.get("nearby") or {}
-        inventory = data.get("inventory") or {}
-        plan = data.get("plan") or {}
-        events = data.get("events") or []
+        event_type = self._classify_heartbeat_event(data)
+        logger.info("[DaemonCraft] Heartbeat classified as: %s", event_type)
 
-        lines = ["[Heartbeat — World Update]"]
-        if status:
-            pos = status.get("position")
-            if pos:
-                lines.append(f"Position: x={pos.get('x','?')} y={pos.get('y','?')} z={pos.get('z','?')}")
-            lines.append(f"Health: {status.get('health', '?')}/{status.get('max_health', '?')}")
-            lines.append(f"Food: {status.get('food', '?')}")
-        if nearby:
-            ents = nearby.get("entities", [])
-            if ents:
-                names = []
-                for e in ents[:8]:
-                    if isinstance(e, dict):
-                        names.append(e.get("name", str(e)))
-                    else:
-                        names.append(str(e))
-                lines.append(f"Nearby entities: {', '.join(names)}")
-            blocks = nearby.get("blocks", [])
-            if blocks:
-                lines.append(f"Nearby blocks: {', '.join(str(b) for b in blocks[:5])}")
-        if inventory:
-            items = inventory.get("items", [])
-            if items:
-                lines.append(f"Inventory ({len(items)} items)")
-        if plan:
-            goal = plan.get("goal") or plan.get("title")
-            if goal:
-                lines.append(f"Active goal: {goal}")
-            tasks = plan.get("tasks", [])
-            if tasks:
-                pending = [t.get("name", str(t)) for t in tasks if t.get("status") in ("pending", "in_progress")]
-                if pending:
-                    lines.append(f"Pending tasks: {', '.join(pending[:5])}")
-        if events:
-            for ev in events[:3]:
-                lines.append(f"Event: {ev}")
+        # Always inject synthetic perceive into session store
+        await self._inject_synthetic_perceive(data)
 
-        text = "\n".join(lines)
-        if len(text) < 30:
-            # Not enough data to bother the AI
-            logger.debug("[DaemonCraft] Heartbeat context too sparse, skipping")
+        if event_type == "context":
+            logger.debug("[DaemonCraft] Context-only heartbeat injected silently")
             return
 
-        logger.info("[DaemonCraft] Heartbeat context injected (%d chars)", len(text))
-
+        # Wake-up event: force an agent turn with tool_choice=required
         source = self.build_source(
             chat_id="world",
             chat_name="world",
             chat_type="group",
-            user_id="heartbeat",
-            user_name="Heartbeat",
+            user_id="system",
+            user_name="System",
             thread_id="world",
         )
         source.profile = self._profile
 
         event = MessageEvent(
-            text=text,
+            text="[System: React to the perceptual update above using available tools.]",
             message_type=MessageType.TEXT,
             source=source,
             raw_message=data,
+            internal=True,
+            tool_choice="required",
         )
+        await self.handle_message(event)
 
-        # If a session is already active, do NOT inject heartbeat now —
-        # it would fight with the in-progress turn. The heartbeat is best-effort.
-        session_key = f"world:world:{self._profile}"
-        if session_key in self._active_sessions:
-            logger.debug("[DaemonCraft] Session active, heartbeat deferred")
+    def _classify_heartbeat_event(self, data: dict) -> str:
+        """Classify heartbeat as 'context' or 'wake_up'.
+
+        Wake-up triggers:
+        - Health decreased from previous known value
+        - Nearby hostile entities (zombie, skeleton, creeper, spider)
+        - Explicit damage events in events list
+        """
+        status = data.get("status") or {}
+        nearby = data.get("nearby") or {}
+        events = data.get("events") or []
+
+        # Damage / health drop
+        current_health = status.get("health")
+        if current_health is not None and hasattr(self, "_last_health"):
+            if current_health < self._last_health:
+                self._last_health = current_health
+                return "wake_up"
+        if current_health is not None:
+            self._last_health = current_health
+
+        # Explicit damage events
+        for ev in events:
+            ev_str = str(ev).lower()
+            if any(k in ev_str for k in ("damage", "hurt", "attack", "hit", "died", "killed")):
+                return "wake_up"
+
+        # Nearby hostile mobs
+        hostile = {"zombie", "skeleton", "creeper", "spider", "enderman", "witch", "husk", "drowned", "phantom"}
+        for ent in nearby.get("entities", [])[:12]:
+            name = str(ent.get("name", ent) if isinstance(ent, dict) else ent).lower()
+            if any(h in name for h in hostile):
+                return "wake_up"
+
+        return "context"
+
+    async def _inject_synthetic_perceive(self, data: dict) -> None:
+        """Inject a fake assistant tool_call + tool result into the world session."""
+        if not self._session_store:
+            logger.debug("[DaemonCraft] No session_store available, skipping synthetic injection")
             return
 
-        if self._message_handler is None:
+        session_id = self._get_world_session_id()
+        if not session_id:
+            logger.debug("[DaemonCraft] No world session found, skipping synthetic injection")
             return
 
-        try:
-            response = await self._message_handler(event)
-        except Exception as e:
-            logger.error("[DaemonCraft] Heartbeat handler error: %s", e, exc_info=True)
-            return
+        tool_call_id = f"hb_{uuid.uuid4().hex[:12]}"
 
-        if not response:
-            return
+        # Build a concise JSON payload for the tool result
+        payload = json.dumps(data, ensure_ascii=False, default=str)
+        # Truncate if too large to avoid flooding context window
+        if len(payload) > 4000:
+            payload = payload[:4000] + "\n...[truncated]"
 
-        # Filter out empty/no-op responses
-        stripped = response.strip()
-        if len(stripped) < 10:
-            logger.debug("[DaemonCraft] Heartbeat response too short, suppressed: %s", stripped[:50])
-            return
-        if stripped.lower() in (
-            "ok", "okay", "no action", "nothing", "...",
-            "no change", "all good", "idle", "waiting",
-        ):
-            logger.debug("[DaemonCraft] Heartbeat response no-op, suppressed: %s", stripped[:50])
-            return
+        assistant_msg = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {"name": "mc_perceive", "arguments": "{}"},
+                }
+            ],
+        }
+        tool_msg = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": payload,
+        }
 
-        # Response has substance — send to world chat
-        logger.info("[DaemonCraft] Heartbeat response -> chat: %s", stripped[:80])
-        await self.send(chat_id="world", content=response)
+        self._session_store.append_to_transcript(session_id, assistant_msg)
+        self._session_store.append_to_transcript(session_id, tool_msg)
+        logger.info("[DaemonCraft] Synthetic mc_perceive injected into session %s", session_id)
+
+    def _get_world_session_id(self) -> Optional[str]:
+        """Resolve the session_id for the world broadcast session."""
+        if not self._session_store:
+            return None
+        source = SessionSource(
+            platform=Platform.DAEMONCRAFT,
+            chat_id="world",
+            chat_type="group",
+            user_id=self._bot_username,
+            thread_id="world",
+        )
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+        )
+        entries = getattr(self._session_store, "_entries", {})
+        entry = entries.get(session_key)
+        if entry:
+            return entry.session_id
+        return None
 
     async def _handle_chat_entry(self, entry: dict) -> None:
         from_ = entry.get("from", "")
