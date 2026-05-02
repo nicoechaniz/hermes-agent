@@ -9,7 +9,11 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
-from typing import Any, Dict
+import copy
+import logging
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -512,7 +516,16 @@ class ChatCompletionsTransport(ProviderTransport):
         # Tool choice override for proactive/agentic turns
         _tool_choice = params.get("tool_choice")
         if _tool_choice:
-            api_kwargs["tool_choice"] = _tool_choice
+            # Kimi: tool_choice='required' is rejected when thinking is enabled.
+            # Fall back to letting the model decide — the system prompt still
+            # instructs it to use tools.
+            if is_kimi and _tool_choice == "required" and not _kimi_thinking_off:
+                logger.warning(
+                    "[chat_completions] Skipping tool_choice='required' for Kimi "
+                    "because thinking is enabled (incompatible)."
+                )
+            else:
+                api_kwargs["tool_choice"] = _tool_choice
 
         return api_kwargs
 
