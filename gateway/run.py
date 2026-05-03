@@ -16196,8 +16196,26 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            # DC-134: per-profile max_iterations / turn_timeout (DaemonCraft etc.)
+            # Load from active profile config so gateway-wide defaults are not
+            # forced on every platform.
+            _profile_name = getattr(source, "profile", None) or ""
+            _profile_max_turns = None
+            _profile_turn_timeout = None
+            if _profile_name:
+                try:
+                    import yaml as _yaml
+                    _profile_cfg_path = Path.home() / ".hermes" / "profiles" / _profile_name / "config.yaml"
+                    if _profile_cfg_path.exists():
+                        _profile_cfg = _yaml.safe_load(_profile_cfg_path.read_text()) or {}
+                        _agent_cfg = _profile_cfg.get("agent", {})
+                        _profile_max_turns = _agent_cfg.get("max_turns")
+                        _profile_turn_timeout = _agent_cfg.get("turn_timeout_seconds")
+                except Exception:
+                    pass
+
+            max_iterations = int(_profile_max_turns or os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            turn_timeout_seconds = int(_profile_turn_timeout or os.getenv("HERMES_TURN_TIMEOUT_SECONDS", "0") or 0) or None
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -16382,7 +16400,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
-                    turn_timeout_seconds=int(os.getenv("HERMES_TURN_TIMEOUT_SECONDS", "0")) or None,
+                    turn_timeout_seconds=turn_timeout_seconds,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
