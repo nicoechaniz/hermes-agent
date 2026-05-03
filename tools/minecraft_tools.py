@@ -216,7 +216,7 @@ def _fmt(resp: dict) -> str:
 
 def check_minecraft_available() -> bool:
     try:
-        result = _api_get("/health", timeout=3, session_id=session_id)
+        result = _api_get("/health", timeout=3)
         return result.get("ok", False) or result.get("status") == "ok"
     except Exception:
         return False
