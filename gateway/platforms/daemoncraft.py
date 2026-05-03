@@ -902,8 +902,15 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                 "kind": kind,
                 **fields,
             }
-            with path.open("a") as f:
-                f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            # Single os.write() with O_APPEND — POSIX-atomic for writes
+            # under PIPE_BUF (typically 4 KB on Linux). Prevents truncated
+            # lines under concurrent writers / mid-write process kill.
+            line = (json.dumps(record, separators=(",", ":")) + "\n").encode("utf-8")
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
         except Exception:
             pass
 
