@@ -25,6 +25,79 @@ import aiohttp
 from aiohttp import WSMsgType
 
 from gateway.config import Platform, PlatformConfig
+
+# ---------------------------------------------------------------------------
+# CycleDetector — ported from daemoncraft agents/safety.py (stdlib-only)
+# ---------------------------------------------------------------------------
+import hashlib
+import json as _json
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Deque
+
+
+def _cd_canonicalize(args) -> str:
+    try:
+        if isinstance(args, str):
+            try:
+                args = _json.loads(args)
+            except Exception:
+                return args
+        return _json.dumps(args, sort_keys=True, default=str)
+    except Exception:
+        return repr(args)
+
+
+def _cd_signature(name: str, args) -> str:
+    payload = f"{name}|{_cd_canonicalize(args)}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+@dataclass
+class _CycleResult:
+    triggered: bool
+    sig: Optional[str]
+    count: int
+    window: int
+    action: str
+
+
+@dataclass
+class CycleDetector:
+    """Ring-buffer cycle detector for repeated tool-call patterns."""
+    n: int = 4
+    window: int = 6
+    action: str = "warn"
+    _buf: Deque[str] = field(default_factory=deque)
+    _last_triggered_sig: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        self._buf = deque(maxlen=max(self.window, self.n))
+
+    def record(self, name: str, args) -> _CycleResult:
+        sig = _cd_signature(name, args)
+        self._buf.append(sig)
+        return self._evaluate()
+
+    def _evaluate(self) -> _CycleResult:
+        if len(self._buf) < self.n:
+            return _CycleResult(False, None, 0, len(self._buf), self.action)
+        counts: Dict[str, int] = {}
+        for s in self._buf:
+            counts[s] = counts.get(s, 0) + 1
+        top_sig, top_count = max(counts.items(), key=lambda kv: kv[1])
+        if top_count >= self.n:
+            if top_sig == self._last_triggered_sig:
+                return _CycleResult(False, top_sig, top_count, len(self._buf), self.action)
+            self._last_triggered_sig = top_sig
+            return _CycleResult(True, top_sig, top_count, len(self._buf), self.action)
+        if self._last_triggered_sig and self._last_triggered_sig != top_sig:
+            self._last_triggered_sig = None
+        return _CycleResult(False, top_sig, top_count, len(self._buf), self.action)
+
+    def reset(self) -> None:
+        self._buf.clear()
+        self._last_triggered_sig = None
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource, build_session_key
 
@@ -51,6 +124,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._voice_mode_default: str = "all"  # DaemonCraft defaults to TTS for all replies
         self._last_tts_time: float = 0.0
         self._tts_queue: list[dict] = []  # Dedup buffer for rapid-fire messages
+        self._cycle_detector: Optional[CycleDetector] = None
 
         # Plan tracking for heartbeat-driven progress evaluation and GC
         self._plan_goal: Optional[str] = None
@@ -95,6 +169,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._last_seen_timestamp = int(time.time() * 1000)
         self._shutdown_event.clear()
         self._session = aiohttp.ClientSession()
+
+        n = int(os.getenv("MC_CYCLE_N", "0"))
+        window = int(os.getenv("MC_CYCLE_WINDOW", "20"))
+        action = os.getenv("MC_CYCLE_ACTION", "warn")
+        if n > 0:
+            self._cycle_detector = CycleDetector(n=n, window=window, action=action)
+            logger.info("[DaemonCraft] CycleDetector enabled: n=%d window=%d action=%s", n, window, action)
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
         logger.info("[DaemonCraft] Connected to %s as %s", self._bot_api_url, self._bot_username)
@@ -383,6 +464,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         if event_type == "context":
             logger.debug("[DaemonCraft] Context-only heartbeat injected silently")
+            return
+
+        # Cycle guard — skip wake-up if loop is repeating mc_perceive calls
+        if await self._check_cycle("mc_perceive", {}):
             return
 
         # Wake-up event: force an agent turn with tool_choice=required
@@ -681,6 +766,30 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Cycle detection
+    # ------------------------------------------------------------------
+
+    async def _check_cycle(self, tool_name: str, args: dict) -> bool:
+        """Check tool-call cycle. Returns True if cycle detected and action is 'interrupt'."""
+        if self._cycle_detector is None:
+            return False
+        result = self._cycle_detector.record(tool_name, args)
+        if result.triggered:
+            if result.action == "interrupt":
+                logger.warning(
+                    "[DaemonCraft] Cycle detected for '%s' (%d/%d) — interrupting agent",
+                    tool_name, result.count, result.window,
+                )
+                await self._interrupt_agent("cycle_detected")
+                return True
+            else:
+                logger.warning(
+                    "[DaemonCraft] Cycle detected for '%s' (%d/%d) — action=%s",
+                    tool_name, result.count, result.window, result.action,
+                )
+        return False
 
     # ------------------------------------------------------------------
     # Outbound
