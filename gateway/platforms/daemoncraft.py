@@ -614,6 +614,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         current_health = status.get("health")
         if current_health is not None and hasattr(self, "_last_health"):
             if current_health < self._last_health:
+                logger.info("[DaemonCraft] Wake-up reason: health dropped %s -> %s", self._last_health, current_health)
                 self._last_health = current_health
                 return "wake_up"
         if current_health is not None:
@@ -623,6 +624,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         for ev in events:
             ev_str = str(ev).lower()
             if any(k in ev_str for k in ("damage", "hurt", "attack", "hit", "died", "killed")):
+                logger.info("[DaemonCraft] Wake-up reason: damage event '%s'", ev_str[:80])
                 return "wake_up"
 
         # Nearby hostile mobs
@@ -630,7 +632,14 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         for ent in nearby.get("entities", [])[:12]:
             name = str(ent.get("name", ent) if isinstance(ent, dict) else ent).lower()
             if any(h in name for h in hostile):
+                logger.info("[DaemonCraft] Wake-up reason: hostile entity '%s'", name)
                 return "wake_up"
+
+        # Bot stuck — critical, needs immediate reaction
+        task = status.get("task")
+        if task and task.get("status") == "stuck":
+            logger.info("[DaemonCraft] Wake-up reason: bot stuck (%s)", task.get("error", "unknown")[:60])
+            return "wake_up"
 
         return "context"
 
@@ -980,8 +989,11 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # DC-123: relay TTS to dashboard after every successful outbound message.
         # Before DC-112 the agent_loop generated TTS explicitly. Now the gateway
         # owns all cognition and must drive TTS itself. We skip PASS/empty
-        # heartbeat responses and metadata-flagged suppression.
+        # heartbeat responses, metadata-flagged suppression, and system messages.
+        system_tts_skip = {"steer", "gateway shutting down", "synthetic mc_perceive", "heartbeat", "mc_perceive"}
+        is_system_msg = any(skip in content.lower() for skip in system_tts_skip)
         if (content and content.strip() not in ("PASS", "")
+                and not is_system_msg
                 and not (metadata or {}).get("suppress_tts")):
             asyncio.create_task(self._generate_and_relay_tts(content, chat_id))
 
@@ -1004,6 +1016,8 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             clean = _re.sub(r'[*_`#\[\]()]', '', clean).strip()
             if not clean:
                 return
+            # Edge-TTS stutter fix: prepend zero-width space to prevent first-word repetition.
+            clean = "\u200b" + clean
             tts_result = await asyncio.to_thread(text_to_speech_tool, text=clean[:4000])
             tts_data = _json.loads(tts_result)
             audio_path = tts_data.get("file_path")
