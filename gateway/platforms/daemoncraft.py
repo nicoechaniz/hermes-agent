@@ -792,6 +792,60 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         return False
 
     # ------------------------------------------------------------------
+    # Dashboard feed (DC-123)
+    # ------------------------------------------------------------------
+
+    async def on_processing_complete(self, event, outcome) -> None:
+        """POST the last assistant turn to /agent/log so the dashboard Bot Mind panel populates.
+
+        Before DC-112 the agent_loop posted turns directly. After DC-112 cognition
+        moved to the gateway but no one wired the log relay. This hook restores
+        visibility without touching the loop.
+        """
+        if not self._bot_api_url or not self._session:
+            return
+        try:
+            session_id = self._get_world_session_id()
+            if not session_id or not self._session_store:
+                return
+            transcript = self._session_store.load_transcript(session_id)
+            # Find the last assistant message in the transcript
+            last_assistant = None
+            tool_calls = []
+            for msg in reversed(transcript):
+                role = msg.get("role", "")
+                if role == "assistant" and last_assistant is None:
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        # Extract text and tool_use blocks
+                        text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+                        tool_calls = [
+                            {"name": b.get("name"), "input": b.get("input")}
+                            for b in content if b.get("type") == "tool_use"
+                        ]
+                        last_assistant = "\n".join(text_parts).strip()
+                    else:
+                        last_assistant = str(content)
+                    break
+
+            if last_assistant is None and not tool_calls:
+                return
+
+            await self._session.post(
+                f"{self._bot_api_url}/agent/log",
+                json={
+                    "turn": len(transcript),
+                    "time": int(time.time() * 1000),
+                    "prompt": "",  # omit — transcript is large; response + tools is what the panel needs
+                    "response": last_assistant or "",
+                    "tool_calls": tool_calls,
+                    "error": None,
+                },
+            )
+        except Exception as e:
+            logger.debug("[DaemonCraft] on_processing_complete /agent/log post failed: %s", e)
+
+    # ------------------------------------------------------------------
     # Outbound
     # ------------------------------------------------------------------
 
@@ -825,7 +879,6 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                     body = await resp.text()
                     logger.warning("[DaemonCraft] /chat/send failed: %s %s", resp.status, body)
                     return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
-                return SendResult(success=True)
         except Exception as e:
             logger.warning("[DaemonCraft] /chat/send exception: %s", e)
             return SendResult(success=False, error=str(e), retryable=True)
@@ -854,6 +907,45 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                     logger.debug("[DaemonCraft] /agent/log failed: %s %s", resp.status, body)
         except Exception as e:
             logger.debug("[DaemonCraft] /agent/log exception: %s", e)
+
+        # DC-123: relay TTS to dashboard after every successful outbound message.
+        # Before DC-112 the agent_loop generated TTS explicitly. Now the gateway
+        # owns all cognition and must drive TTS itself. We skip PASS/empty
+        # heartbeat responses and metadata-flagged suppression.
+        if (content and content.strip() not in ("PASS", "")
+                and not (metadata or {}).get("suppress_tts")):
+            asyncio.create_task(self._generate_and_relay_tts(content, chat_id))
+
+        return SendResult(success=True)
+
+    async def _generate_and_relay_tts(self, text: str, chat_id: str) -> None:
+        """Generate TTS for outbound text and relay audio to the dashboard.
+
+        DC-123 fix: before DC-112 agent_loop called TTS explicitly. After DC-112
+        the gateway owns cognition but the TTS relay was never wired. This method
+        closes that gap — it is called as a fire-and-forget task from send().
+        """
+        try:
+            from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+            if not check_tts_requirements():
+                return
+            import re as _re, json as _json
+            # Strip Minecraft formatting codes and markdown before synthesis.
+            clean = _re.sub(r'§[0-9a-fklmnor]', '', text)
+            clean = _re.sub(r'[*_`#\[\]()]', '', clean).strip()
+            if not clean:
+                return
+            tts_result = await asyncio.to_thread(text_to_speech_tool, text=clean[:4000])
+            tts_data = _json.loads(tts_result)
+            audio_path = tts_data.get("file_path")
+            if audio_path and os.path.exists(audio_path):
+                await self._copy_and_relay_tts(audio_path, chat_id)
+                try:
+                    os.remove(audio_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.debug("[DaemonCraft] TTS generation failed: %s", e)
 
     async def _copy_and_relay_tts(self, audio_path: str, chat_id: str) -> SendResult:
         """Copy audio to shared TTS cache and POST /tts/play to dashboards."""
