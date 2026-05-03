@@ -257,6 +257,8 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         elif msg_type == "heartbeat_context":
             data = payload.get("data", {})
             await self._handle_heartbeat_context(data)
+        elif msg_type == "action_result":
+            await self._handle_action_result(payload)
         elif msg_type == "interrupt":
             # Loop-to-gateway interrupt acknowledgment — no action needed
             pass
@@ -411,6 +413,12 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             raw_message=data,
         )
         await self.handle_message(event)
+
+    async def _handle_action_result(self, payload: dict) -> None:
+        """Forward action_result events to transform_tool_result hooks."""
+        import json as _json
+        result_str = _json.dumps(payload)
+        await self.invoke_hook("transform_tool_result", tool_name="mc_action_result", result=result_str)
 
     async def _handle_heartbeat_context(self, data: dict) -> None:
         """Process heartbeat_context with two-level event architecture.
