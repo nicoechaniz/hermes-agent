@@ -58,6 +58,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._plan_created_at: float = 0.0
         self._plan_last_progress_at: float = 0.0
         self._plan_gc_timeout: int = (config.extra or {}).get("plan_gc_timeout_seconds", 300)
+        self._turn_counter: int = 0  # Sequential turn counter for agent logs
 
         # Load allowlist by UUID (preferred) or username fallback.
         raw_allow = os.getenv("DAEMONCRAFT_ALLOWED_USERS", "").strip()
@@ -701,11 +702,12 @@ class DaemonCraftAdapter(BasePlatformAdapter):
     async def _post_agent_log(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Post agent turn to bot server /agent/log for dashboard display."""
         try:
+            self._turn_counter += 1
             tool_calls = []
             if metadata and "tool_calls" in metadata:
                 tool_calls = metadata["tool_calls"]
             payload = {
-                "turn": int(time.time()),
+                "turn": self._turn_counter,
                 "time": int(time.time() * 1000),
                 "prompt": getattr(self, "_last_prompt", ""),
                 "response": content,
