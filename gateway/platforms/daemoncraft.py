@@ -537,6 +537,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        # Log agent turn to bot server for dashboard display
+        await self._post_agent_log(content, metadata)
+
         # _world_names is populated lazily from inbound broadcasts. If the gateway
         # initiates an outbound broadcast before any inbound from that world, this
         # will default to DM (whisper). For now the agent only replies to inbound.
@@ -561,6 +564,30 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[DaemonCraft] /chat/send exception: %s", e)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def _post_agent_log(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Post agent turn to bot server /agent/log for dashboard display."""
+        try:
+            tool_calls = []
+            if metadata and "tool_calls" in metadata:
+                tool_calls = metadata["tool_calls"]
+            payload = {
+                "turn": int(time.time()),
+                "time": int(time.time() * 1000),
+                "prompt": getattr(self, "_last_prompt", ""),
+                "response": content,
+                "tool_calls": tool_calls,
+                "error": None,
+            }
+            async with self._session.post(
+                f"{self._bot_api_url}/agent/log",
+                json=payload,
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.debug("[DaemonCraft] /agent/log failed: %s %s", resp.status, body)
+        except Exception as e:
+            logger.debug("[DaemonCraft] /agent/log exception: %s", e)
 
     async def _copy_and_relay_tts(self, audio_path: str, chat_id: str) -> SendResult:
         """Copy audio to shared TTS cache and POST /tts/play to dashboards."""
