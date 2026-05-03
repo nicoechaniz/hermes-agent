@@ -576,6 +576,28 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         }
 
         self._session_store.append_to_transcript(session_id, assistant_msg)
+
+        # Run transform_tool_result hooks so plugins (e.g. altercraft scene-graph)
+        # can consume synthetic mc_perceive on the same path as real tool results.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            for hook_result in invoke_hook(
+                "transform_tool_result",
+                tool_name="mc_perceive",
+                args={},
+                result=payload,
+                task_id="",
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                duration_ms=0,
+            ):
+                if isinstance(hook_result, str):
+                    payload = hook_result
+                    tool_msg["content"] = payload
+                    break
+        except Exception as _hook_exc:
+            logger.debug("[DaemonCraft] transform_tool_result hook error: %s", _hook_exc)
+
         self._session_store.append_to_transcript(session_id, tool_msg)
         logger.info("[DaemonCraft] Synthetic mc_perceive injected into session %s", session_id)
 
