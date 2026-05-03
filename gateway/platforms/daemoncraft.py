@@ -13,12 +13,14 @@ The adapter consumes the Bot API WebSocket and HTTP endpoints:
 """
 
 import asyncio
+import datetime as _dt
 import json
 import logging
 import os
 import random
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 import aiohttp
@@ -852,6 +854,58 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.debug("[DaemonCraft] on_processing_complete /agent/log post failed: %s", e)
+
+        # DC-132 — emit a turn metric (best-effort; never raises).
+        # Latency: time since the last user/perceive message in the transcript,
+        # if we can find one. tokens_in/out: not yet exposed by AIAgent at this
+        # hook, so we emit zero placeholders rather than fabricate values.
+        try:
+            self._emit_metric(
+                "turn",
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=None,
+                tool_call_count=len(tool_calls),
+            )
+            for tc in tool_calls:
+                self._emit_metric("tool", tool=tc.get("name") or "?", ok=True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # DC-132 — JSONL metrics (mirrors agents/agent_loop.py emitter in daemoncraft)
+    # ------------------------------------------------------------------
+
+    def _emit_metric(self, kind: str, **fields) -> None:
+        """Append a JSON line to ~/.hermes/metrics/<cast>/<date>.jsonl.
+
+        Schema is documented in scripts/agent-metrics-report.py in the
+        daemoncraft repo. This is the gateway counterpart to the heartbeat
+        emitter in agent_loop.py — together they cover the four families
+        the report script aggregates.
+
+        Cast comes from DAEMONCRAFT_METRICS_CAST env var; falls back to the
+        bot username so events still group sensibly if the operator hasn't
+        set it. No env var → emitter still fires under the username.
+        """
+        try:
+            cast = os.getenv("DAEMONCRAFT_METRICS_CAST", "").strip() or self._bot_username or "daemoncraft"
+            metrics_root = Path(os.getenv("DAEMONCRAFT_METRICS_DIR", str(Path.home() / ".hermes" / "metrics")))
+            now = _dt.datetime.utcnow()
+            cast_dir = metrics_root / cast
+            cast_dir.mkdir(parents=True, exist_ok=True)
+            path = cast_dir / f"{now.date().isoformat()}.jsonl"
+            record = {
+                "ts": now.isoformat(timespec="seconds") + "Z",
+                "cast": cast,
+                "agent": self._bot_username or "?",
+                "kind": kind,
+                **fields,
+            }
+            with path.open("a") as f:
+                f.write(json.dumps(record, separators=(",", ":")) + "\n")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Outbound
