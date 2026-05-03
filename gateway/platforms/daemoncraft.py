@@ -78,9 +78,6 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._session = aiohttp.ClientSession()
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
-        # Register platform-wide fallback for minecraft tools
-        from tools import minecraft_tools
-        minecraft_tools.set_daemoncraft_bot_url(self._bot_api_url)
         logger.info("[DaemonCraft] Connected to %s as %s", self._bot_api_url, self._bot_username)
         return True
 
@@ -97,30 +94,20 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             await self._session.close()
             self._session = None
         self._mark_disconnected()
-        # Unregister all session endpoints for this adapter
-        from tools import minecraft_tools
-        for sid in list(minecraft_tools._session_endpoints.keys()):
-            minecraft_tools.unregister_session_endpoint(sid)
         logger.info("[DaemonCraft] Disconnected")
 
     async def handle_message(self, event: MessageEvent) -> None:
-        """Override to register session endpoint after dispatch."""
-        await super().handle_message(event)
-        asyncio.create_task(self._register_session_endpoint_async(event))
+        """Handle a chat message, injecting heartbeat context if relevant.
 
-    async def _register_session_endpoint_async(self, event: MessageEvent) -> None:
-        """Find the session_id for this event and register the bot endpoint."""
-        await asyncio.sleep(0.5)  # Give gateway time to create session
+        Sets the bot_api_url context variable so that any minecraft tools
+        dispatched for this message target the correct bot server.
+        """
+        from tools import minecraft_tools
+        token = minecraft_tools._bot_api_url_ctx.set(self._bot_api_url)
         try:
-            from gateway.mirror import _find_session_id
-            from tools import minecraft_tools
-            chat_id = str(event.source.chat_id)
-            session_id = _find_session_id("daemoncraft", chat_id)
-            if session_id:
-                minecraft_tools.register_session_endpoint(session_id, self._bot_api_url)
-                logger.debug("[DaemonCraft] Registered endpoint %s for session %s", self._bot_api_url, session_id)
-        except Exception as e:
-            logger.debug("[DaemonCraft] Session endpoint registration failed: %s", e)
+            await super().handle_message(event)
+        finally:
+            minecraft_tools._bot_api_url_ctx.reset(token)
 
     # ------------------------------------------------------------------
     # WebSocket listener

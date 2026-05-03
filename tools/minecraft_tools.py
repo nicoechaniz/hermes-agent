@@ -39,6 +39,7 @@ Environment:
 """
 
 import json
+import contextvars
 import os
 import re
 import threading
@@ -50,40 +51,26 @@ from tools.registry import registry, tool_error
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Session-scoped endpoint resolution
+# Session-scoped endpoint resolution via contextvars
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_session_endpoints: Dict[str, str] = {}
-_daemoncraft_bot_url: str = ""
+_bot_api_url_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "bot_api_url", default=None
+)
 
 
-def register_session_endpoint(session_id: str, bot_api_url: str) -> None:
-    """Register the bot API URL for a specific gateway session."""
-    _session_endpoints[session_id] = bot_api_url
+def _get_bot_api_url(_session_id: Optional[str] = None) -> str:
+    """Resolve the bot API URL for the current execution context.
 
-
-def unregister_session_endpoint(session_id: str) -> None:
-    """Remove the bot API URL for a gateway session."""
-    _session_endpoints.pop(session_id, None)
-
-
-def set_daemoncraft_bot_url(url: str) -> None:
-    """Set the platform-wide fallback bot API URL for DaemonCraft."""
-    global _daemoncraft_bot_url
-    _daemoncraft_bot_url = url
-
-
-def _get_bot_api_url(session_id: Optional[str] = None) -> str:
-    """Resolve the bot API URL for the current session or platform."""
-    if session_id and session_id in _session_endpoints:
-        return _session_endpoints[session_id]
-    if _daemoncraft_bot_url:
-        return _daemoncraft_bot_url
+    Priority:
+      1. Context variable (set by the active DaemonCraftAdapter)
+      2. MC_API_URL environment variable (CLI / legacy fallback)
+      3. Default localhost:3001
+    """
+    url = _bot_api_url_ctx.get()
+    if url:
+        return url
     return os.getenv("MC_API_URL", "http://localhost:3001")
-
-
-# Legacy module-level constant for backward compat (handlers use _get_bot_api_url)
-MC_API_URL = os.getenv("MC_API_URL", "http://localhost:3001")
 
 # Global cancel event — set by agent_loop.py when chat arrives during a turn
 _cancel_event: Optional[threading.Event] = None
@@ -96,7 +83,7 @@ def set_cancel_event(event: Optional[threading.Event]):
 
 
 def _api_get(path: str, timeout: int = 15, session_id: Optional[str] = None) -> dict:
-    url = f"{_get_bot_api_url(session_id)}{path}"
+    url = f"{_get_bot_api_url()}{path}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -129,7 +116,7 @@ def _cancel_bot_action(session_id: Optional[str] = None):
 
 def _api_post(path: str, data: Optional[dict] = None, timeout: int = 300, session_id: Optional[str] = None) -> dict:
     """POST to the bot server. Runs in a thread so it can be cancelled mid-flight."""
-    url = f"{_get_bot_api_url(session_id)}{path}"
+    url = f"{_get_bot_api_url()}{path}"
     payload = json.dumps(data or {}).encode("utf-8")
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
 
@@ -253,7 +240,7 @@ _PERCEIVE_POST_ENDPOINTS = {
 }
 
 
-def _handle_mc_perceive(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_perceive(args: dict, **kwargs) -> str:
     """Observe the Minecraft world: status, inventory, surroundings, chat, etc."""
     ptype = args.get("type", "status")
 
@@ -271,7 +258,7 @@ def _handle_mc_perceive(args: dict, session_id: str = None, **kwargs) -> str:
             w = args.get("width", 1280)
             h = args.get("height", 720)
             path += f'?width={w}&height={h}'
-        return _fmt(_api_get(path, session_id=session_id))
+        return _fmt(_api_get(path))
 
     if ptype in _PERCEIVE_POST_ENDPOINTS:
         endpoint = _PERCEIVE_POST_ENDPOINTS[ptype]
@@ -282,7 +269,7 @@ def _handle_mc_perceive(args: dict, session_id: str = None, **kwargs) -> str:
             payload["message"] = args["message"]
         elif ptype == "fair_play":
             payload["enabled"] = args.get("enabled", True)
-        return _fmt(_api_post(endpoint, payload, session_id=session_id))
+        return _fmt(_api_post(endpoint, payload))
 
     return f"Error: unknown perceive type '{ptype}'"
 
@@ -291,7 +278,7 @@ def _handle_mc_perceive(args: dict, session_id: str = None, **kwargs) -> str:
 # 2. mc_move — Navigation and locomotion
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_move(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_move(args: dict, **kwargs) -> str:
     """Move the bot: goto coordinates, follow a player, stop, etc."""
     action = args.get("action", "stop")
     payload: Dict[str, Any] = {}
@@ -301,25 +288,25 @@ def _handle_mc_move(args: dict, session_id: str = None, **kwargs) -> str:
             if coord not in args:
                 return f"Error: {coord} is required for goto"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/goto", payload, session_id=session_id))
+        return _fmt(_api_post("/action/goto", payload))
 
     if action == "goto_near":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for goto_near"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"], "range": args.get("range", 2)}
-        return _fmt(_api_post("/action/goto_near", payload, session_id=session_id))
+        return _fmt(_api_post("/action/goto_near", payload))
 
     if action == "follow":
         if "player" not in args:
             return "Error: player is required for follow"
-        return _fmt(_api_post("/action/follow", {"player": args["player"]}, session_id=session_id))
+        return _fmt(_api_post("/action/follow", {"player": args["player"]}))
 
     if action == "stop":
-        return _fmt(_api_post("/action/stop", session_id=session_id))
+        return _fmt(_api_post("/action/stop"))
 
     if action == "deathpoint":
-        return _fmt(_api_post("/action/deathpoint", session_id=session_id))
+        return _fmt(_api_post("/action/deathpoint"))
 
     return f"Error: unknown move action '{action}'"
 
@@ -328,7 +315,7 @@ def _handle_mc_move(args: dict, session_id: str = None, **kwargs) -> str:
 # 3. mc_mine — Resource gathering and block interaction
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_mine(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_mine(args: dict, **kwargs) -> str:
     """Mine, dig, collect, and find resources in the world."""
     action = args.get("action", "pickup")
     payload: Dict[str, Any] = {}
@@ -337,29 +324,29 @@ def _handle_mc_mine(args: dict, session_id: str = None, **kwargs) -> str:
         if "block" not in args:
             return "Error: block is required for collect"
         payload = {"block": args["block"], "count": args.get("count", 1)}
-        return _fmt(_api_post("/action/collect", payload, session_id=session_id))
+        return _fmt(_api_post("/action/collect", payload))
 
     if action == "dig":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for dig"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/dig", payload, session_id=session_id))
+        return _fmt(_api_post("/action/dig", payload))
 
     if action == "pickup":
-        return _fmt(_api_post("/action/pickup", session_id=session_id))
+        return _fmt(_api_post("/action/pickup"))
 
     if action == "find_blocks":
         if "block" not in args:
             return "Error: block is required for find_blocks"
         payload = {"block": args["block"], "radius": args.get("radius", 32), "count": args.get("count", 10)}
-        return _fmt(_api_post("/action/find_blocks", payload, session_id=session_id))
+        return _fmt(_api_post("/action/find_blocks", payload))
 
     if action == "find_entities":
         payload = {"radius": args.get("radius", 32)}
         if args.get("type"):
             payload["type"] = args["type"]
-        return _fmt(_api_post("/action/find_entities", payload, session_id=session_id))
+        return _fmt(_api_post("/action/find_entities", payload))
 
     return f"Error: unknown mine action '{action}'"
 
@@ -368,7 +355,7 @@ def _handle_mc_mine(args: dict, session_id: str = None, **kwargs) -> str:
 # 4. mc_build — Construction, placement, and block interaction
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_build(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_build(args: dict, **kwargs) -> str:
     """Build, place blocks, fill areas, interact with blocks, and utility actions."""
     action = args.get("action", "use")
     payload: Dict[str, Any] = {}
@@ -380,7 +367,7 @@ def _handle_mc_build(args: dict, session_id: str = None, **kwargs) -> str:
             if coord not in args:
                 return f"Error: {coord} is required for place"
         payload = {"block": args["block"], "x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/place", payload, session_id=session_id))
+        return _fmt(_api_post("/action/place", payload))
 
     if action == "fill":
         if "block" not in args:
@@ -394,51 +381,51 @@ def _handle_mc_build(args: dict, session_id: str = None, **kwargs) -> str:
             "x2": args["x2"], "y2": args["y2"], "z2": args["z2"],
             "hollow": args.get("hollow", False),
         }
-        return _fmt(_api_post("/action/place_fill", payload, session_id=session_id))
+        return _fmt(_api_post("/action/place_fill", payload))
 
     if action == "interact":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for interact"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/interact", payload, session_id=session_id))
+        return _fmt(_api_post("/action/interact", payload))
 
     if action == "till":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for till"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/till", payload, session_id=session_id))
+        return _fmt(_api_post("/action/till", payload))
 
     if action == "bonemeal":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for bonemeal"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/bonemeal", payload, session_id=session_id))
+        return _fmt(_api_post("/action/bonemeal", payload))
 
     if action == "flatten":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for flatten"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/flatten", payload, session_id=session_id))
+        return _fmt(_api_post("/action/flatten", payload))
 
     if action == "ignite":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for ignite"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/ignite", payload, session_id=session_id))
+        return _fmt(_api_post("/action/ignite", payload))
 
     if action == "fish":
-        return _fmt(_api_post("/action/fish", session_id=session_id))
+        return _fmt(_api_post("/action/fish"))
 
     if action == "close":
-        return _fmt(_api_post("/action/close_screen", session_id=session_id))
+        return _fmt(_api_post("/action/close_screen"))
 
     if action == "use":
-        return _fmt(_api_post("/action/use", session_id=session_id))
+        return _fmt(_api_post("/action/use"))
 
     if action == "toss":
         if "item" not in args:
@@ -446,17 +433,17 @@ def _handle_mc_build(args: dict, session_id: str = None, **kwargs) -> str:
         payload = {"item": args["item"]}
         if args.get("count") is not None:
             payload["count"] = args["count"]
-        return _fmt(_api_post("/action/toss", payload, session_id=session_id))
+        return _fmt(_api_post("/action/toss", payload))
 
     if action == "sleep":
-        return _fmt(_api_post("/action/sleep_bed", session_id=session_id))
+        return _fmt(_api_post("/action/sleep_bed"))
 
     if action == "wait":
         payload = {"seconds": args.get("seconds", 5)}
-        return _fmt(_api_post("/action/wait", payload, session_id=session_id))
+        return _fmt(_api_post("/action/wait", payload))
 
     if action == "connect":
-        return _fmt(_api_post("/connect", session_id=session_id))
+        return _fmt(_api_post("/connect"))
 
     return f"Error: unknown build action '{action}'"
 
@@ -465,7 +452,7 @@ def _handle_mc_build(args: dict, session_id: str = None, **kwargs) -> str:
 # 5. mc_craft — Crafting, smelting, and recipes
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_craft(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_craft(args: dict, **kwargs) -> str:
     """Craft items, look up recipes, and manage furnaces."""
     action = args.get("action", "craft")
     payload: Dict[str, Any] = {}
@@ -474,13 +461,13 @@ def _handle_mc_craft(args: dict, session_id: str = None, **kwargs) -> str:
         if "item" not in args:
             return "Error: item is required for craft"
         payload = {"item": args["item"], "count": args.get("count", 1)}
-        return _fmt(_api_post("/action/craft", payload, session_id=session_id))
+        return _fmt(_api_post("/action/craft", payload))
 
     if action == "recipes":
         if "item" not in args:
             return "Error: item is required for recipes"
         payload = {"item": args["item"]}
-        return _fmt(_api_post("/action/recipes", payload, session_id=session_id))
+        return _fmt(_api_post("/action/recipes", payload))
 
     if action == "smelt":
         if "input" not in args:
@@ -488,7 +475,7 @@ def _handle_mc_craft(args: dict, session_id: str = None, **kwargs) -> str:
         payload = {"input": args["input"], "count": args.get("count", 1)}
         if args.get("fuel"):
             payload["fuel"] = args["fuel"]
-        return _fmt(_api_post("/action/smelt", payload, session_id=session_id))
+        return _fmt(_api_post("/action/smelt", payload))
 
     if action == "smelt_start":
         if "input" not in args:
@@ -496,7 +483,7 @@ def _handle_mc_craft(args: dict, session_id: str = None, **kwargs) -> str:
         payload = {"input": args["input"], "count": args.get("count", 1)}
         if args.get("fuel"):
             payload["fuel"] = args["fuel"]
-        return _fmt(_api_post("/action/smelt_start", payload, session_id=session_id))
+        return _fmt(_api_post("/action/smelt_start", payload))
 
     if action in ("furnace_check", "furnace_take"):
         for coord in ("x", "y", "z"):
@@ -504,7 +491,7 @@ def _handle_mc_craft(args: dict, session_id: str = None, **kwargs) -> str:
                 return f"Error: {coord} is required for {action}"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
         endpoint = "/action/furnace_check" if action == "furnace_check" else "/action/furnace_take"
-        return _fmt(_api_post(endpoint, payload, session_id=session_id))
+        return _fmt(_api_post(endpoint, payload))
 
     return f"Error: unknown craft action '{action}'"
 
@@ -513,7 +500,7 @@ def _handle_mc_craft(args: dict, session_id: str = None, **kwargs) -> str:
 # 6. mc_combat — Combat, equipment, and survival actions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_combat(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_combat(args: dict, **kwargs) -> str:
     """Fight, flee, equip gear, eat, and execute combat maneuvers."""
     action = args.get("action", "eat")
     payload: Dict[str, Any] = {}
@@ -522,64 +509,64 @@ def _handle_mc_combat(args: dict, session_id: str = None, **kwargs) -> str:
         payload = {}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/attack", payload, session_id=session_id))
+        return _fmt(_api_post("/action/attack", payload))
 
     if action == "fight":
         payload = {"retreat_health": args.get("retreat_health", 6), "duration": args.get("duration", 30)}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/fight", payload, session_id=session_id))
+        return _fmt(_api_post("/action/fight", payload))
 
     if action == "flee":
         payload = {"distance": args.get("distance", 16)}
-        return _fmt(_api_post("/action/flee", payload, session_id=session_id))
+        return _fmt(_api_post("/action/flee", payload))
 
     if action == "eat":
-        return _fmt(_api_post("/action/eat", session_id=session_id))
+        return _fmt(_api_post("/action/eat"))
 
     if action == "equip":
         if "item" not in args:
             return "Error: item is required for equip"
         payload = {"item": args["item"], "slot": args.get("slot", "hand")}
-        return _fmt(_api_post("/action/equip", payload, session_id=session_id))
+        return _fmt(_api_post("/action/equip", payload))
 
     if action == "sneak":
         payload = {"enable": args.get("enable", True)}
-        return _fmt(_api_post("/action/sneak", payload, session_id=session_id))
+        return _fmt(_api_post("/action/sneak", payload))
 
     if action == "shield":
         payload = {"duration": args.get("duration", 3)}
-        return _fmt(_api_post("/action/shield_block", payload, session_id=session_id))
+        return _fmt(_api_post("/action/shield_block", payload))
 
     if action == "shoot":
         payload = {"predict": args.get("predict", True)}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/shoot", payload, session_id=session_id))
+        return _fmt(_api_post("/action/shoot", payload))
 
     if action == "sprint_attack":
         payload = {}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/sprint_attack", payload, session_id=session_id))
+        return _fmt(_api_post("/action/sprint_attack", payload))
 
     if action == "crit":
         payload = {}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/critical_hit", payload, session_id=session_id))
+        return _fmt(_api_post("/action/critical_hit", payload))
 
     if action == "strafe":
         payload = {"direction": args.get("direction", "random"), "duration": args.get("duration", 5)}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/strafe", payload, session_id=session_id))
+        return _fmt(_api_post("/action/strafe", payload))
 
     if action == "combo":
         payload = {"style": args.get("style", "aggressive")}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/action/combo", payload, session_id=session_id))
+        return _fmt(_api_post("/action/combo", payload))
 
     return f"Error: unknown combat action '{action}'"
 
@@ -588,7 +575,7 @@ def _handle_mc_combat(args: dict, session_id: str = None, **kwargs) -> str:
 # 7. mc_chat — Communication and team coordination
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_chat(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_chat(args: dict, **kwargs) -> str:
     """Send messages: public chat, whispers, team chat, rally points, etc."""
     action = args.get("action", "chat")
     payload: Dict[str, Any] = {}
@@ -596,22 +583,22 @@ def _handle_mc_chat(args: dict, session_id: str = None, **kwargs) -> str:
     if action == "chat":
         if "message" not in args:
             return "Error: message is required for chat"
-        return _fmt(_api_post("/action/chat", {"message": args["message"]}, session_id=session_id))
+        return _fmt(_api_post("/action/chat", {"message": args["message"]}))
 
     if action == "whisper":
         if "player" not in args or "message" not in args:
             return "Error: player and message are required for whisper"
-        return _fmt(_api_post("/action/whisper", {"player": args["player"], "message": args["message"]}, session_id=session_id))
+        return _fmt(_api_post("/action/whisper", {"player": args["player"], "message": args["message"]}))
 
     if action == "chat_to":
         if "player" not in args or "message" not in args:
             return "Error: player and message are required for chat_to"
-        return _fmt(_api_post("/action/chat_to", {"player": args["player"], "message": args["message"]}, session_id=session_id))
+        return _fmt(_api_post("/action/chat_to", {"player": args["player"], "message": args["message"]}))
 
     if action == "team_chat":
         if "message" not in args:
             return "Error: message is required for team_chat"
-        return _fmt(_api_post("/action/team_chat", {"message": args["message"]}, session_id=session_id))
+        return _fmt(_api_post("/action/team_chat", {"message": args["message"]}))
 
     if action == "rally":
         for coord in ("x", "y", "z"):
@@ -620,7 +607,7 @@ def _handle_mc_chat(args: dict, session_id: str = None, **kwargs) -> str:
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
         if args.get("message"):
             payload["message"] = args["message"]
-        return _fmt(_api_post("/action/rally", payload, session_id=session_id))
+        return _fmt(_api_post("/action/rally", payload))
 
     if action == "set_team":
         if "team" not in args:
@@ -628,11 +615,11 @@ def _handle_mc_chat(args: dict, session_id: str = None, **kwargs) -> str:
         payload = {"team": args["team"], "role": args.get("role", "warrior")}
         if args.get("teammates"):
             payload["teammates"] = args["teammates"].split(",")
-        return _fmt(_api_post("/action/set_team", payload, session_id=session_id))
+        return _fmt(_api_post("/action/set_team", payload))
 
     if action == "complete_command":
         payload = {"index": args.get("index", 0)}
-        return _fmt(_api_post("/action/complete_command", payload, session_id=session_id))
+        return _fmt(_api_post("/action/complete_command", payload))
 
     return f"Error: unknown chat action '{action}'"
 
@@ -641,7 +628,7 @@ def _handle_mc_chat(args: dict, session_id: str = None, **kwargs) -> str:
 # 8. mc_manage — Containers, waypoints, and background tasks
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _handle_mc_manage(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_manage(args: dict, **kwargs) -> str:
     """Manage containers, saved locations, and background tasks."""
     action = args.get("action", "marks")
     payload: Dict[str, Any] = {}
@@ -651,7 +638,7 @@ def _handle_mc_manage(args: dict, session_id: str = None, **kwargs) -> str:
             if coord not in args:
                 return f"Error: {coord} is required for chest"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/action/list_container", payload, session_id=session_id))
+        return _fmt(_api_post("/action/list_container", payload))
 
     if action == "deposit":
         if "item" not in args:
@@ -660,7 +647,7 @@ def _handle_mc_manage(args: dict, session_id: str = None, **kwargs) -> str:
             if coord not in args:
                 return f"Error: {coord} is required for deposit"
         payload = {"item": args["item"], "x": args["x"], "y": args["y"], "z": args["z"], "count": args.get("count", 0)}
-        return _fmt(_api_post("/action/deposit", payload, session_id=session_id))
+        return _fmt(_api_post("/action/deposit", payload))
 
     if action == "withdraw":
         if "item" not in args:
@@ -669,63 +656,63 @@ def _handle_mc_manage(args: dict, session_id: str = None, **kwargs) -> str:
             if coord not in args:
                 return f"Error: {coord} is required for withdraw"
         payload = {"item": args["item"], "x": args["x"], "y": args["y"], "z": args["z"], "count": args.get("count", 0)}
-        return _fmt(_api_post("/action/withdraw", payload, session_id=session_id))
+        return _fmt(_api_post("/action/withdraw", payload))
 
     if action == "mark":
         if "name" not in args:
             return "Error: name is required for mark"
         payload = {"name": args["name"], "note": args.get("note", "")}
-        return _fmt(_api_post("/action/mark", payload, session_id=session_id))
+        return _fmt(_api_post("/action/mark", payload))
 
     if action == "marks":
-        return _fmt(_api_post("/action/marks", session_id=session_id))
+        return _fmt(_api_post("/action/marks"))
 
     if action == "go_mark":
         if "name" not in args:
             return "Error: name is required for go_mark"
-        return _fmt(_api_post("/action/go_mark", {"name": args["name"]}, session_id=session_id))
+        return _fmt(_api_post("/action/go_mark", {"name": args["name"]}))
 
     if action == "unmark":
         if "name" not in args:
             return "Error: name is required for unmark"
-        return _fmt(_api_post("/action/unmark", {"name": args["name"]}, session_id=session_id))
+        return _fmt(_api_post("/action/unmark", {"name": args["name"]}))
 
     if action == "bg_goto":
         for coord in ("x", "y", "z"):
             if coord not in args:
                 return f"Error: {coord} is required for bg_goto"
         payload = {"x": args["x"], "y": args["y"], "z": args["z"]}
-        return _fmt(_api_post("/task/goto", payload, session_id=session_id))
+        return _fmt(_api_post("/task/goto", payload))
 
     if action == "bg_collect":
         if "block" not in args:
             return "Error: block is required for bg_collect"
         payload = {"block": args["block"], "count": args.get("count", 1)}
-        return _fmt(_api_post("/task/collect", payload, session_id=session_id))
+        return _fmt(_api_post("/task/collect", payload))
 
     if action == "bg_fight":
         payload = {"retreat_health": args.get("retreat_health", 6), "duration": args.get("duration", 30)}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/task/fight", payload, session_id=session_id))
+        return _fmt(_api_post("/task/fight", payload))
 
     if action == "bg_combo":
         payload = {"style": args.get("style", "aggressive")}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/task/combo", payload, session_id=session_id))
+        return _fmt(_api_post("/task/combo", payload))
 
     if action == "bg_strafe":
         payload = {"direction": args.get("direction", "random"), "duration": args.get("duration", 10)}
         if args.get("target"):
             payload["target"] = args["target"]
-        return _fmt(_api_post("/task/strafe", payload, session_id=session_id))
+        return _fmt(_api_post("/task/strafe", payload))
 
     if action == "cancel":
-        return _fmt(_api_post("/task/cancel", session_id=session_id))
+        return _fmt(_api_post("/task/cancel"))
 
     if action == "task_status":
-        return _fmt(_api_get("/task", session_id=session_id))
+        return _fmt(_api_get("/task"))
 
     return f"Error: unknown manage action '{action}'"
 
@@ -925,7 +912,7 @@ MC_MANAGE_SCHEMA = {
 # 9. mc_plan — Persistent goal & task planning
 # ═══════════════════════════════════════════════════════════════════
 
-def _handle_mc_plan(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_plan(args: dict, **kwargs) -> str:
     """Manage persistent goals and tasks. Bots use this to remember multi-step projects across turns."""
     action = args.get("action", "get_plan")
     payload: Dict[str, Any] = {}
@@ -938,10 +925,10 @@ def _handle_mc_plan(args: dict, session_id: str = None, **kwargs) -> str:
             "goal": args["goal"],
             "tasks": args.get("tasks", []),
         }
-        return _fmt(_api_post("/action/plan", payload, session_id=session_id))
+        return _fmt(_api_post("/action/plan", payload))
 
     if action == "get_plan":
-        return _fmt(_api_post("/action/plan", {"action": "get_plan"}, session_id=session_id))
+        return _fmt(_api_post("/action/plan", {"action": "get_plan"}))
 
     if action == "update_task":
         if "task_id" not in args:
@@ -953,7 +940,7 @@ def _handle_mc_plan(args: dict, session_id: str = None, **kwargs) -> str:
             "result": args.get("result"),
             "attempt": args.get("attempt"),
         }
-        return _fmt(_api_post("/action/plan", payload, session_id=session_id))
+        return _fmt(_api_post("/action/plan", payload))
 
     if action == "add_task":
         if "goal" not in args:
@@ -963,7 +950,7 @@ def _handle_mc_plan(args: dict, session_id: str = None, **kwargs) -> str:
             "goal": args["goal"],
             "status": args.get("status", "pending"),
         }
-        return _fmt(_api_post("/action/plan", payload, session_id=session_id))
+        return _fmt(_api_post("/action/plan", payload))
 
     if action == "remove_task":
         if "task_id" not in args:
@@ -972,10 +959,10 @@ def _handle_mc_plan(args: dict, session_id: str = None, **kwargs) -> str:
             "action": "remove_task",
             "task_id": args["task_id"],
         }
-        return _fmt(_api_post("/action/plan", payload, session_id=session_id))
+        return _fmt(_api_post("/action/plan", payload))
 
     if action == "clear_goal":
-        return _fmt(_api_post("/action/plan", {"action": "clear_goal"}, session_id=session_id))
+        return _fmt(_api_post("/action/plan", {"action": "clear_goal"}))
 
     return f"Error: unknown plan action '{action}'"
 
@@ -1018,7 +1005,7 @@ MC_PLAN_SCHEMA = {
 # 10. mc_screenshot — Ray-traced world capture
 # ═══════════════════════════════════════════════════════════════════
 
-def _handle_mc_screenshot(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_screenshot(args: dict, **kwargs) -> str:
     """Take a screenshot of the Minecraft world from the bot's first-person perspective.
 
     Uses prismarine-viewer (Three.js WebGL renderer) + puppeteer headless Chrome.
@@ -1035,7 +1022,7 @@ def _handle_mc_screenshot(args: dict, session_id: str = None, **kwargs) -> str:
             fname += ".png"
         payload["file_name"] = fname
 
-    resp = _api_post("/action/screenshot", payload, timeout=300, session_id=session_id)
+    resp = _api_post("/action/screenshot", payload, timeout=300)
     if not resp.get("ok", True):
         return f"Error: {resp.get('error', 'Screenshot failed')}"
 
@@ -1063,7 +1050,7 @@ MC_SCREENSHOT_SCHEMA = {
 # 11. mc_command — Execute Minecraft server commands
 # ═══════════════════════════════════════════════════════════════════
 
-def _handle_mc_command(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_command(args: dict, **kwargs) -> str:
     """Execute a Minecraft server command via the bot's chat interface.
     
     The bot must have operator privileges for most commands.
@@ -1089,7 +1076,7 @@ def _handle_mc_command(args: dict, session_id: str = None, **kwargs) -> str:
         _gm_path.write_text("off")
         return "Godmode DISABLED. The Daemon Guardian is paused. You can now take damage, drown, or switch gamemodes. Say '/godmode on' to restore protection."
 
-    return _fmt(_api_post("/chat/send", {"message": command}, session_id=session_id))
+    return _fmt(_api_post("/chat/send", {"message": command}))
 
 
 MC_COMMAND_SCHEMA = {
@@ -1112,6 +1099,7 @@ MC_COMMAND_SCHEMA = {
 # 12. mc_story — Narrative state tracker for Role Master mode
 # ═══════════════════════════════════════════════════════════════════
 
+import contextvars
 import os
 from pathlib import Path
 
@@ -1149,7 +1137,7 @@ def _save_story(story: dict) -> None:
     _STORY_PATH.write_text(json.dumps(story, indent=2))
 
 
-def _handle_mc_story(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_story(args: dict, **kwargs) -> str:
     """Track narrative state for Role Master adventures. Pure Python — no bot server needed."""
     action = args.get("action", "get_state")
     story = _load_story()
@@ -1370,7 +1358,7 @@ def _handle_mc_story(args: dict, session_id: str = None, **kwargs) -> str:
         objective = args.get("objective")
         if not player or not objective:
             return "Error: player and objective are required for check_score"
-        result = _api_get(f"/scoreboard?objective={objective}&player={player}", session_id=session_id)
+        result = _api_get(f"/scoreboard?objective={objective}&player={player}")
         if not result.get("ok"):
             return _fmt(result)
         data = result.get("data", {})
@@ -1384,14 +1372,14 @@ def _handle_mc_story(args: dict, session_id: str = None, **kwargs) -> str:
         value = args.get("value", 0)
         if not player or not objective:
             return "Error: player and objective are required for set_score"
-        result = _api_post("/chat/send", {"message": f"/scoreboard players set {player} {objective} {value}"}, session_id=session_id)
+        result = _api_post("/chat/send", {"message": f"/scoreboard players set {player} {objective} {value}"})
         return _fmt(result)
 
     if action == "run_function":
         function = args.get("function")
         if not function:
             return "Error: function path is required for run_function"
-        result = _api_post("/chat/send", {"message": f"/function {function}"}, session_id=session_id)
+        result = _api_post("/chat/send", {"message": f"/function {function}"})
         return _fmt(result)
 
     if action == "setup_sensors":
@@ -1406,7 +1394,7 @@ def _handle_mc_story(args: dict, session_id: str = None, **kwargs) -> str:
             if not name:
                 continue
             # Create scoreboard in Minecraft
-            _api_post("/chat/send", {"message": f"/scoreboard objectives add {name} {criterion}"}, session_id=session_id)
+            _api_post("/chat/send", {"message": f"/scoreboard objectives add {name} {criterion}"})
             # Register/update in story state
             existing = story.get("active_sensors", [])
             existing = [x for x in existing if x.get("name") != name]
@@ -1428,14 +1416,14 @@ def _handle_mc_story(args: dict, session_id: str = None, **kwargs) -> str:
             poll_command = s.get("poll_command")
             # Execute poll command for dummy sensors (proximity, zone, etc.)
             if poll_command:
-                _api_post("/chat/send", {"message": poll_command}, session_id=session_id)
+                _api_post("/chat/send", {"message": poll_command})
             # Read score via native API
-            result = _api_get(f"/scoreboard?objective={name}&player={player}", session_id=session_id)
+            result = _api_get(f"/scoreboard?objective={name}&player={player}")
             if result.get("ok"):
                 score = result.get("data", {}).get("score", 0)
                 fired = score > 0
                 if fired and reset:
-                    _api_post("/chat/send", {"message": f"/scoreboard players set {player} {name} 0"}, session_id=session_id)
+                    _api_post("/chat/send", {"message": f"/scoreboard players set {player} {name} 0"})
                 results.append(f"{name}: {score}" + (" (fired)" if fired else ""))
             else:
                 results.append(f"{name}: error")
@@ -1449,7 +1437,7 @@ def _handle_mc_story(args: dict, session_id: str = None, **kwargs) -> str:
             targets = [s.get("name") for s in sensors]
         removed = []
         for name in targets:
-            _api_post("/chat/send", {"message": f"/scoreboard objectives remove {name}"}, session_id=session_id)
+            _api_post("/chat/send", {"message": f"/scoreboard objectives remove {name}"})
             removed.append(name)
         story["active_sensors"] = [s for s in sensors if s.get("name") not in targets]
         _save_story(story)
@@ -1531,7 +1519,7 @@ MC_REGISTRY_SCHEMA = {
     },
 }
 
-def _handle_mc_registry(args: dict, session_id: str = None, **kwargs) -> str:
+def _handle_mc_registry(args: dict, **kwargs) -> str:
     category = args.get("category")
     filt = (args.get("filter") or "").lower()
     limit = min(int(args.get("limit") or 20), 100)
