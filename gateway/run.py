@@ -16382,6 +16382,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    turn_timeout_seconds=int(os.getenv("HERMES_TURN_TIMEOUT_SECONDS", "0")) or None,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
