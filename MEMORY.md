@@ -4,7 +4,12 @@
 - **Path:** `~/Projects/hermes-agent/`
 - **Fork:** `github.com:nicoechaniz/hermes-agent.git` (origin)
 - **Upstream:** `github.com:NousResearch/hermes-agent.git` (upstream)
-- **Deploy target:** `~/.hermes/hermes-agent/` (NEVER edit directly; update via `hermes update`)
+- **Deploy target:** `~/.hermes/hermes-agent/` (for CompAII's gateway, NOT for DaemonCraft agents)
+
+## Memory Scope
+- **Global memory** (`~/.hermes/memories/MEMORY.md`): facts about Hermes as a project that apply beyond our fork (architecture, upstream velocity, profile design, session key structure)
+- **This file** (`~/Projects/hermes-agent/MEMORY.md`): facts specific to our fork (branches, features, sync status, custom changes)
+- **DaemonCraft memory** (`~/Projects/DaemonCraft/MEMORY.md`): DaemonCraft-specific architecture and tasks
 
 ## Upstream Velocity Context
 Hermes is one of the most actively developed open-source projects on GitHub — among the fastest-growing and most pull-requested. **~150 commits/day is normal**, with peaks of 250+. A gap of 800-1000 commits is NOT months of neglect — it is roughly **one week** of upstream development. Do not interpret "N commits behind" as a crisis; it is the baseline reality of tracking this repo. We sync when it makes sense, not out of alarm.
@@ -70,6 +75,7 @@ All DaemonCraft work lives under `feat/daemoncraft`. We do NOT keep separate per
 scripts/run_tests.sh
 ```
 
-## Lattice
-- Project initialized in repo root (`.lattice/`)
+## Kanban
+- Board: `hermes kanban --board hermes-agent` (migrated from Lattice 2026-05-08)
+- 2 active tasks migrated; dispatcher OFF (manual mode)
 - Ignored in git via `.git/info/exclude`
