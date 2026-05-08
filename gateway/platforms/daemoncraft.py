@@ -961,6 +961,16 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             logger.warning("[DaemonCraft] /chat/send exception: %s", e)
             return SendResult(success=False, error=str(e), retryable=True)
 
+        # DC-123: relay TTS to dashboard after successful outbound message.
+        system_tts_skip = {"steer", "gateway shutting down", "synthetic mc_perceive", "heartbeat", "mc_perceive"}
+        is_system_msg = any(skip in content.lower() for skip in system_tts_skip)
+        if (content and content.strip() not in ("PASS", "")
+                and not is_system_msg
+                and not (metadata or {}).get("suppress_tts")):
+            asyncio.create_task(self._generate_and_relay_tts(content, chat_id))
+
+        return SendResult(success=True)
+
     async def _post_agent_log(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Post agent turn to bot server /agent/log for dashboard display."""
         try:
@@ -985,19 +995,6 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                     logger.debug("[DaemonCraft] /agent/log failed: %s %s", resp.status, body)
         except Exception as e:
             logger.debug("[DaemonCraft] /agent/log exception: %s", e)
-
-        # DC-123: relay TTS to dashboard after every successful outbound message.
-        # Before DC-112 the agent_loop generated TTS explicitly. Now the gateway
-        # owns all cognition and must drive TTS itself. We skip PASS/empty
-        # heartbeat responses, metadata-flagged suppression, and system messages.
-        system_tts_skip = {"steer", "gateway shutting down", "synthetic mc_perceive", "heartbeat", "mc_perceive"}
-        is_system_msg = any(skip in content.lower() for skip in system_tts_skip)
-        if (content and content.strip() not in ("PASS", "")
-                and not is_system_msg
-                and not (metadata or {}).get("suppress_tts")):
-            asyncio.create_task(self._generate_and_relay_tts(content, chat_id))
-
-        return SendResult(success=True)
 
     async def _generate_and_relay_tts(self, text: str, chat_id: str) -> None:
         """Generate TTS for outbound text and relay audio to the dashboard.
