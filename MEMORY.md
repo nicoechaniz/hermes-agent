@@ -6,6 +6,9 @@
 - **Upstream:** `github.com:NousResearch/hermes-agent.git` (upstream)
 - **Deploy target:** `~/.hermes/hermes-agent/` (NEVER edit directly; update via `hermes update`)
 
+## Upstream Velocity Context
+Hermes is one of the most actively developed open-source projects on GitHub — among the fastest-growing and most pull-requested. **~150 commits/day is normal**, with peaks of 250+. A gap of 800-1000 commits is NOT months of neglect — it is roughly **one week** of upstream development. Do not interpret "N commits behind" as a crisis; it is the baseline reality of tracking this repo. We sync when it makes sense, not out of alarm.
+
 ## Active Branches
 | Branch | Purpose | Base |
 |--------|---------|------|
