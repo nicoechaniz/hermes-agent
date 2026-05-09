@@ -934,8 +934,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        # Log agent turn to bot server for dashboard display
-        await self._post_agent_log(content, metadata)
+        # Log agent turn to bot server for dashboard display (skip heartbeat/context-only turns)
+        if content and content.strip() and content != "None":
+            await self._post_agent_log(content, metadata)
 
         # _world_names is populated lazily from inbound broadcasts. If the gateway
         # initiates an outbound broadcast before any inbound from that world, this
