@@ -231,17 +231,6 @@ TOOLSETS = {
         "includes": [],
     },
 
-    "minecraft": {
-        "description": "Minecraft embodied agent tools — perceive, navigate, build, craft, combat, manage, screenshot, command, story, registry",
-        "tools": [
-            "mc_perceive", "mc_move", "mc_mine", "mc_build",
-            "mc_craft", "mc_combat", "mc_manage", "mc_plan",
-            "mc_screenshot", "mc_command", "mc_story", "mc_registry",
-            "mc_chat", "mc_no_op",
-        ],
-        "includes": [],
-    },
-
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
