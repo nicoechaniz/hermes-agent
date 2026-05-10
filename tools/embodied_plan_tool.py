@@ -176,6 +176,15 @@ def _handler(args: dict[str, Any], **_kw: Any) -> str:
         if k in args and args[k] is not None:
             body[k] = args[k]
 
+    # Multi-bot: include bot_api_url so the embodied service dispatches
+    # to the correct bot/server.js instance. Read from the agent's own
+    # environment (each DaemonCraft agent has BOT_API_URL in its systemd
+    # unit pointing to its own Mineflayer bot). Also accept explicit
+    # override from tool args (for future per-call routing).
+    bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
+    if bot_api_url:
+        body["bot_api_url"] = bot_api_url
+
     url = f"{_service_url()}/intent"
     timeout = _timeout()
 
