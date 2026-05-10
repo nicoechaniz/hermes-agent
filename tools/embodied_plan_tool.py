@@ -341,48 +341,10 @@ def _handler(args: dict[str, Any], **_kw: Any) -> str:
             },
         })
 
-    # Auto-recovery (Pipeline 2): if the execution failed with a usable
-    # `details` string, retry once with a narrative-recovery intent. This
-    # generalises lesson 7 of primitives_lab and prevents the cloud LLM
-    # from pivoting to "give materials to player" on the first hiccup.
-    #
-    # Recurrence guard: skip if the caller already supplied previous_error
-    # (cloud LLM-driven recovery — let it own the loop) OR if details is
-    # missing (nothing to embed).
-    caller_drove_recovery = isinstance(args, dict) and bool(args.get("previous_error"))
-    if (not caller_drove_recovery
-            and isinstance(result, dict)
-            and result.get("ok") is False
-            and isinstance(result.get("execution_results"), list)
-            and len(result["execution_results"]) > 0):
-        first_failure = result["execution_results"][0]
-        if (isinstance(first_failure, dict)
-                and first_failure.get("ok") is False
-                and isinstance(first_failure.get("details"), str)
-                and first_failure["details"]):
-            recovery_prev_err = {
-                "tool": first_failure.get("tool", "unknown"),
-                "error_type": first_failure.get("error_type", "other"),
-                "details": first_failure["details"],
-            }
-            # Compose a fresh body with the rewritten intent. Drop
-            # previous_error from the wire payload (existing behavior:
-            # avoids the daemoncraft `recovery_naive_retry` mitigation
-            # false-positive).
-            retry_body = dict(body)
-            retry_body["intent"] = _compose_replan_intent(intent, recovery_prev_err)
-            retry_body.pop("previous_error", None)
-            try:
-                retry_resp = httpx.post(url, json=retry_body, timeout=timeout)
-                retry_result = retry_resp.json()
-                if isinstance(retry_result, dict) and retry_result.get("ok") is True:
-                    return json.dumps(retry_result)
-            except (httpx.TimeoutException, httpx.RequestError, json.JSONDecodeError) as exc:
-                logger.warning("embodied_plan auto-retry failed: %s", exc)
-                # Fall through to return the original failure.
-
-    # Pass the (possibly retried) service response through verbatim. Hermes'
-    # AIAgent gets the full {ok, plan, execution_results, ...} envelope.
+    # Pass the service response through verbatim. Hermes' AIAgent gets
+    # the full {ok, plan, execution_results, ...} envelope so the LLM
+    # can decide whether to retry with previous_error, reword the
+    # request, or surface ask_clarification questions to the user.
     return json.dumps(result)
 
 
