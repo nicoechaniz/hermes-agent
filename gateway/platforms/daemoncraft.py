@@ -284,19 +284,41 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         for entry in new_messages:
             self._last_seen_timestamp = max(self._last_seen_timestamp, entry.get("time", 0))
 
-        # Load known bots from env (same source as agent_loop.py)
-        known_bots = set(
-            u.strip().lower()
-            for u in os.getenv("MC_KNOWN_BOTS", self._bot_username).split(",")
-            if u.strip()
-        )
+        # Dynamically discover all known bots from cast configs.
+        # This is a live hook — no need to update .env files when bots change.
+        def _discover_known_bots() -> set[str]:
+            import yaml
+            from pathlib import Path as _Path
+            bots = set()
+            casts_dir = _Path.home() / "Projects" / "DaemonCraft" / "agents" / "casts"
+            try:
+                for cf in sorted(casts_dir.glob("*.yaml")):
+                    cfg = yaml.safe_load(cf.read_text()) or {}
+                    for a in cfg.get("agents", []):
+                        name = a.get("name", "")
+                        if name:
+                            bots.add(name.strip().lower())
+            except Exception:
+                pass
+            # Also check env override
+            override = os.getenv("MC_KNOWN_BOTS", "")
+            if override:
+                for u in override.split(","):
+                    u = u.strip().lower()
+                    if u:
+                        bots.add(u)
+            return bots
+
+        known_bots = _discover_known_bots()
 
         urgent_msgs = []
         accepted_msgs = []
         import re
 
-        # Build a regex that matches @username with word boundaries,
-        # tolerating trailing punctuation like @pamplinas, or @pamplinas!
+        # Build two regexes:
+        # 1. @username!  — URGENT interrupt (exclamation forces immediate response)
+        # 2. @username   — normal steer (queued, doesn't interrupt)
+        urgent_re = re.compile(rf"\b@{re.escape(self._bot_username.lower())}!", re.IGNORECASE)
         mention_re = re.compile(rf"\b@{re.escape(self._bot_username.lower())}\b", re.IGNORECASE)
 
         for entry in new_messages:
@@ -304,14 +326,16 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             msg_text = entry.get("message", "")
             is_bot = from_user in known_bots
             mentions_bot = bool(mention_re.search(msg_text))
+            is_urgent = bool(urgent_re.search(msg_text))
 
             if is_bot and not mentions_bot:
                 continue  # Silently drop bot spam
 
             accepted_msgs.append(entry)
 
-            # Only human @mentions are urgent (bots never interrupt, even with @mention)
-            if mentions_bot and not is_bot:
+            # Only @username! (with exclamation) is urgent interrupt.
+            # @username without ! is steer — queued, doesn't abort current turn.
+            if is_urgent and not is_bot:
                 urgent_msgs.append(entry)
 
         # Interrupt the loop for urgent human @mentions before generating response
@@ -755,7 +779,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         if not payload:
             payload = json.dumps({
-                "_note": "Body unresponsive — act on what you last knew.",
+                "_note": "Body unresponsive — do not act as if it is responding. Wait for the next heartbeat.",
                 "error": exc_info or "embodied service unavailable",
             })
 
