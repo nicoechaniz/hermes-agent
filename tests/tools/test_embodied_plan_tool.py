@@ -277,3 +277,157 @@ def test_handler_skips_narrative_when_previous_error_is_empty_dict():
     assert captured["body"]["intent"] == "Do a thing."
     # Empty dict is treated as "no error info" — neither prepended nor forwarded.
     assert "previous_error" not in captured["body"] or captured["body"].get("previous_error") == {}
+
+
+# ---------------------------------------------------------------------------
+# Auto-recovery on execution failure (Pipeline 2)
+#
+# When the embodied service returns ok=false with an execution failure that
+# carries a `details` string, the handler synchronously retries once with a
+# narrative-recovery intent. Generalises lesson 7 (vault: lessons-004-007).
+# ---------------------------------------------------------------------------
+
+
+def test_handler_auto_retries_on_execution_failure_with_details():
+    """Given a failing execution_result with details, the handler must POST
+    a second intent embedding the failure narrative."""
+    from tools.embodied_plan_tool import _handler
+
+    posts = []
+    def fake_post(url, json=None, timeout=None):
+        posts.append({"url": url, "body": json})
+        resp = MagicMock()
+        if len(posts) == 1:
+            # First call returns a place_block failure with details
+            resp.json.return_value = {
+                "ok": False,
+                "context_id": "first",
+                "execution_results": [{
+                    "tool": "place_block",
+                    "ok": False,
+                    "error_type": "bot_action_failed",
+                    "details": "Can't place oak_planks at 7, 65, 35: "
+                               "target space is occupied by leaf_litter.",
+                }],
+            }
+        else:
+            # Retry succeeds
+            resp.json.return_value = {
+                "ok": True,
+                "context_id": "retry",
+                "execution_results": [{
+                    "tool": "place_block",
+                    "ok": True,
+                }],
+            }
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        out = _handler({
+            "intent": "Place 1 oak_planks at coordinates (7, 65, 35).",
+        })
+
+    payload = json.loads(out)
+    assert len(posts) == 2, f"expected 2 POSTs (initial + 1 retry), got {len(posts)}"
+    assert payload["context_id"] == "retry", \
+        "handler should return the retry result when retry succeeds"
+
+    # The retry intent must embed the details from the first failure.
+    retry_intent = posts[1]["body"]["intent"]
+    assert "leaf_litter" in retry_intent, \
+        f"retry intent missing failure detail: {retry_intent!r}"
+    assert "place_block" in retry_intent, \
+        "retry intent must reference the failed tool"
+
+
+def test_handler_returns_original_failure_when_retry_also_fails():
+    """If the retry also fails, surface the ORIGINAL failure to the caller —
+    the cloud LLM gets the cleanest signal about what's wrong."""
+    from tools.embodied_plan_tool import _handler
+
+    posts = []
+    def fake_post(url, json=None, timeout=None):
+        posts.append({"body": json})
+        resp = MagicMock()
+        # Both attempts fail
+        resp.json.return_value = {
+            "ok": False,
+            "context_id": f"attempt-{len(posts)}",
+            "execution_results": [{
+                "tool": "place_block",
+                "ok": False,
+                "error_type": "bot_action_failed",
+                "details": f"failure {len(posts)}",
+            }],
+        }
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        out = _handler({"intent": "Place 1 oak_planks at coordinates (0, 0, 0)."})
+
+    payload = json.loads(out)
+    assert len(posts) == 2, "must retry exactly once even when retry fails"
+    assert payload["context_id"] == "attempt-1", \
+        "must return original failure (attempt-1), not retry failure (attempt-2)"
+
+
+def test_handler_does_not_double_recover_when_caller_passed_previous_error():
+    """If the cloud LLM is already driving recovery (passes previous_error),
+    skip auto-retry to avoid double-narration. The narrative rewrite of the
+    structured field still applies (existing behavior), but no second POST."""
+    from tools.embodied_plan_tool import _handler
+
+    posts = []
+    def fake_post(url, json=None, timeout=None):
+        posts.append({"body": json})
+        resp = MagicMock()
+        resp.json.return_value = {
+            "ok": False,
+            "context_id": "single",
+            "execution_results": [{
+                "tool": "place_block",
+                "ok": False,
+                "error_type": "bot_action_failed",
+                "details": "first attempt failed",
+            }],
+        }
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        _handler({
+            "intent": "retry the build",
+            "previous_error": {
+                "tool": "place_block",
+                "error_type": "missing_material",
+                "details": "earlier attempt had no oak_log",
+            },
+        })
+
+    assert len(posts) == 1, \
+        f"caller-driven recovery must not trigger auto-retry; got {len(posts)} POSTs"
+
+
+def test_handler_skips_auto_retry_when_no_details_field():
+    """If execution_results has ok=false but no `details`, there's nothing
+    useful to embed in a recovery narrative — skip the retry."""
+    from tools.embodied_plan_tool import _handler
+
+    posts = []
+    def fake_post(url, json=None, timeout=None):
+        posts.append({"body": json})
+        resp = MagicMock()
+        resp.json.return_value = {
+            "ok": False,
+            "execution_results": [{"tool": "place_block", "ok": False, "error_type": "unknown"}],
+        }
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        _handler({"intent": "Place 1 oak_planks at coordinates (1, 1, 1)."})
+
+    assert len(posts) == 1, \
+        "no details = no useful recovery narrative; skip the retry"
