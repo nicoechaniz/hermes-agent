@@ -470,15 +470,15 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         event_type = self._classify_heartbeat_event(data)
         logger.info("[DaemonCraft] Heartbeat classified as: %s", event_type)
 
-        # Always inject synthetic perceive into session store
-        await self._inject_synthetic_perceive(data)
+        # Inject world state from the body (Gemma-Andy) instead of raw bot data
+        await self._inject_embodied_world_state(data)
 
         if event_type == "context":
             logger.debug("[DaemonCraft] Context-only heartbeat injected silently")
             return
 
-        # Cycle guard — skip wake-up if loop is repeating mc_perceive calls
-        if await self._check_cycle("mc_perceive", {}):
+        # Cycle guard — skip wake-up if loop is repeating embodied_plan calls
+        if await self._check_cycle("embodied_plan", {}):
             return
 
         # Wake-up event: force an agent turn with tool_choice=required
@@ -705,6 +705,86 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         self._session_store.append_to_transcript(session_id, tool_msg)
         logger.info("[DaemonCraft] Synthetic mc_perceive injected into session %s", session_id)
+
+    async def _inject_embodied_world_state(self, data: dict) -> None:
+        """Query the body (Gemma-Andy via embodied service) for world state.
+
+        Instead of injecting raw bot data as synthetic mc_perceive, we ask the
+        body to scan the world and inject its processed response. This keeps
+        the architecture pure: Steve only knows the world through his body.
+        """
+        if not self._session_store:
+            logger.debug("[DaemonCraft] No session_store, skipping embodied injection")
+            return
+
+        session_id = self._get_world_session_id()
+        if not session_id:
+            logger.debug("[DaemonCraft] No world session, skipping embodied injection")
+            return
+
+        embodied_url = os.environ.get("EMBODIED_SERVICE_URL", "http://localhost:7790")
+        intent = (
+            "Scan the area. Report concisely: your position, the 5 most common "
+            "nearby blocks with counts, any entities (players, mobs) with distances, "
+            "inventory highlights (tools, key materials), and any hazards. "
+            "Keep the report under 600 characters."
+        )
+
+        tool_call_id = f"hb_{uuid.uuid4().hex[:12]}"
+        payload = None
+        ok = False
+        exc_info = None
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{embodied_url}/intent",
+                    json={"intent": intent, "autonomy_level": 1, "deadline_seconds": 15},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 200:
+                        body = await resp.json()
+                        ok = body.get("ok", False)
+                        if ok and body.get("execution_results"):
+                            payload = json.dumps(body, ensure_ascii=False, default=str)
+                        elif body.get("plan", {}).get("body_plan"):
+                            payload = json.dumps(body["plan"], ensure_ascii=False, default=str)
+        except Exception as exc:
+            logger.warning("[DaemonCraft] Embodied world-state query failed: %s", exc)
+            exc_info = str(exc)
+
+        if not payload:
+            payload = json.dumps({
+                "_note": "Body unresponsive — act on what you last knew.",
+                "error": exc_info or "embodied service unavailable",
+            })
+
+        if len(payload) > 4000:
+            payload = payload[:4000] + "\n...[truncated]"
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {"name": "embodied_plan", "arguments": json.dumps({"intent": intent})},
+                }
+            ],
+        }
+        tool_msg = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": payload,
+        }
+
+        self._session_store.append_to_transcript(session_id, assistant_msg)
+        self._session_store.append_to_transcript(session_id, tool_msg)
+        logger.info(
+            "[DaemonCraft] Embodied world-state injected (body ok=%s, %d chars) into session %s",
+            ok, len(payload), session_id,
+        )
 
     def _get_world_session_id(self) -> Optional[str]:
         """Resolve the session_id for the world broadcast session."""
