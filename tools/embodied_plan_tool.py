@@ -132,7 +132,16 @@ EMBODIED_PLAN_SCHEMA = {
                         "Gemma-Andy to compose a recovery plan. Shape: "
                         "{tool: <name>, error_type: 'stuck'|'no_path'|'tool_timeout'|"
                         "'hazard_detected'|'missing_material'|'other', "
-                        "details: <string>}."
+                        "details: <string>}.\n\n"
+                        "Implementation note: Gemma-Andy v2-2-3 currently ignores "
+                        "the structured previous_error field 100% of the time "
+                        "(primitives_lab experiment 003+007). The Hermes-side "
+                        "handler works around this by prepending a narrative "
+                        "reformulation of previous_error to the intent text, "
+                        "which the model honors 100% of the time (experiment "
+                        "007 in_intent_directive at n=10). The structured field "
+                        "is still forwarded for forward-compat with a future "
+                        "model retrain."
                     ),
                 },
                 "deadline_seconds": {
@@ -149,6 +158,48 @@ EMBODIED_PLAN_SCHEMA = {
         },
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Replan composition
+# ---------------------------------------------------------------------------
+
+
+def _compose_replan_intent(intent: str, prev_err: dict[str, Any]) -> str:
+    """Embed `previous_error` as a recovery directive trailing the intent.
+
+    Why: `gemma-andy:e4b-v2-2-3-q8_0` ignores the structured `previous_error`
+    field 100% of the time (verified by primitives_lab experiment 003 + 007,
+    n=10 each). The same failure context embedded in the intent text shifts
+    the plan 100% of the time (experiment 007 `in_intent_directive`).
+
+    Composition shape — the order is load-bearing. Put the original intent
+    first, then the failure narration, then the recovery directive **last**.
+    The model has a strong last-instruction bias; in our first iteration the
+    narrative was prepended and the original (uncorrected) intent landed at
+    the tail — Andy re-emitted the failing tool. Trailing recovery shifts
+    the plan as designed in experiment 007.
+
+    This is a Hermes-side workaround — once Andy is retrained to honor the
+    structured field, the rewrite can be removed without breaking anything.
+    """
+    tool = prev_err.get("tool") or "the previous action"
+    error_type = prev_err.get("error_type") or "failed"
+    details = (prev_err.get("details") or "").strip()
+    # Past-tense framing: the original (failing) intent never appears as a
+    # live imperative — only as something we *tried* and that failed. This
+    # matches experiment 007's winning `in_intent_narrative` shape (9/10).
+    # The closing directive is what the model picks up as the active task.
+    parts = [
+        f"We tried to {intent}, but {tool} failed with error_type={error_type}.",
+    ]
+    if details:
+        parts.append(details)
+    parts.append(
+        "Compose a new plan that achieves the same outcome using the "
+        "actually-available state. Do not re-emit the failing action."
+    )
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +235,19 @@ def _handler(args: dict[str, Any], **_kw: Any) -> str:
     bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
     if bot_api_url:
         body["bot_api_url"] = bot_api_url
+
+    prev_err = body.get("previous_error")
+    if isinstance(prev_err, dict) and prev_err:
+        body["intent"] = _compose_replan_intent(intent, prev_err)
+        # Once we've embedded the failure narrative into the intent, forwarding
+        # the structured field is redundant — and worse, the daemoncraft
+        # `recovery_naive_retry` mitigation compares only tool names, so it
+        # flags `place_block` re-emission as a regression even when the model
+        # correctly swapped the block argument. Drop the structured field to
+        # avoid that false positive. Re-enable forwarding once Andy is
+        # retrained to honor previous_error directly (then this rewrite path
+        # can be retired entirely).
+        body.pop("previous_error", None)
 
     url = f"{_service_url()}/intent"
     timeout = _timeout()
