@@ -57,9 +57,18 @@ def test_rule_text_carries_concrete_examples(profile_config):
 
 
 def test_recovery_section_documents_auto_retry(profile_config):
-    """Pipeline 2 changes the tool to auto-retry on failure. The system
-    prompt must tell the cloud LLM not to micro-manage retries (or it
-    will create double-recovery loops). Pin that note."""
+    """The system prompt must tell the cloud LLM not to micro-manage retries.
+    Updated for Autonomía Corporal: the autonomous loop in agent_loop.py
+    owns retry/verify/escalate; Hermes writes Plans, doesn't retry."""
     sp = profile_config["agent"]["system_prompt"]
-    assert "synchronous retry" in sp or "happens automatically" in sp, \
-        "system_prompt must inform cloud LLM that recovery is automatic"
+    assert "loop owns" in sp.lower() or "happens automatically" in sp, \
+        "system_prompt must inform cloud LLM that recovery is loop-owned"
+
+
+def test_recovery_section_references_autonomous_loop_terms(profile_config):
+    """Phase 2 of the integration: rules now reference Plan/Step/VerifySpec
+    so Steve composes plans for the autonomous loop, not free-form intents."""
+    sp = profile_config["agent"]["system_prompt"]
+    expected_terms = ["VerifySpec", "Plan", "Step", "agent_loop", "body_session"]
+    missing = [t for t in expected_terms if t not in sp]
+    assert not missing, f"system_prompt missing autonomous-loop terms: {missing}"
