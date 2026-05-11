@@ -77,7 +77,44 @@ EMBODIED_PLAN_SCHEMA = {
             "NOT FOR:\n"
             "- Conversation, narrative, education (handle yourself)\n"
             "- Reading/explaining game state to the user (handle yourself)\n"
-            "- Tasks outside body orchestration (writing code, web research, etc.)"
+            "- Tasks outside body orchestration (writing code, web research, etc.)\n\n"
+            "INTENT COMPOSITION RULES — these are validated by primitives_lab\n"
+            "experiments 001-007 against gemma-andy:e4b-v2-2-3-q8_0. Following\n"
+            "them is the difference between a task succeeding and the body\n"
+            "model emitting an empty plan or the wrong tool:\n\n"
+            "1. ENGLISH IMPERATIVE ALWAYS. Compose the intent in English\n"
+            "   imperative form regardless of the user's surface language.\n"
+            "   Spanish conversational ('dame X', 'seguime') makes the model\n"
+            "   pick the wrong tool semantics. The model is a body, not a\n"
+            "   conversation partner.\n\n"
+            "2. PLACEMENT INTENTS NEED EXPLICIT NON-BOT COORDINATES. When the\n"
+            "   intent is to place block(s), supply each (x, y, z) explicitly\n"
+            "   and ENSURE no coordinate equals the bot's current position.\n"
+            "   Phrases like 'stack upward', 'build a wall here', 'place at\n"
+            "   your spot' make the body model pick the bot's own [x, y, z],\n"
+            "   which fails with bot_action_failed (can't place a block in\n"
+            "   the space the bot occupies). Read bot_position from the\n"
+            "   most recent world snapshot, then compose target coords that\n"
+            "   are adjacent. Example for a 4-block vertical wall starting\n"
+            "   one block in front of the player: 'Place 4 oak_planks at\n"
+            "   coordinates (X, Y, Z), (X, Y+1, Z), (X, Y+2, Z), (X, Y+3, Z)'\n"
+            "   with the actual integer values substituted in.\n\n"
+            "3. MULTI-STEP INTENTS NEED NUMBERED STAGES. The body model only\n"
+            "   produces a true gather→craft→place plan when the intent\n"
+            "   enumerates stages: 'Step 1: scan for X. Step 2: mine N X.\n"
+            "   Step 3: craft into Y. Step 4: place at <coords>.' Free-form\n"
+            "   prose ('build a wall using wood from nearby trees, then...')\n"
+            "   collapses to empty plans. If you need >2 stages, enumerate.\n\n"
+            "4. DON'T DELEGATE CONDITIONALS. The body model does not honor\n"
+            "   if/then/else against world_state. NEVER write 'if you have X\n"
+            "   then Y else Z'. Read world state first (call this tool with\n"
+            "   a get_inventory-style intent OR consult prior tool results),\n"
+            "   decide the branch yourself, then issue an unconditional\n"
+            "   imperative.\n\n"
+            "5. PLAYER-AS-TARGET INTENTS NEED EXPLICIT USERNAME. 'Toss N X to\n"
+            "   the player named <username>' / 'Follow the player named\n"
+            "   <username>' / 'Stand next to player <username>' all hit 100%\n"
+            "   success. Pronoun forms ('come to me', 'follow me') do not."
         ),
         "parameters": {
             "type": "object",
@@ -86,13 +123,33 @@ EMBODIED_PLAN_SCHEMA = {
                     "type": "string",
                     "description": (
                         "Natural-language description of what the bot should do. "
-                        "Be CONCRETE. Include 'what', 'where', and 'why' when "
-                        "relevant. Examples: 'Help the player gather 12 oak logs "
-                        "before night.' / 'Go to coordinates [120, 64, -33] but "
-                        "avoid the ravine.' / 'Build a small shelter using planks "
-                        "from the inventory.' Ambiguous intents are okay — the "
-                        "embodied service will respond with an ask_clarification "
-                        "tool_call which surfaces a question to ask the user."
+                        "Compose in English imperative form (rule 1 in the parent "
+                        "tool description). Be CONCRETE — include 'what', 'where' "
+                        "(exact coordinates when placement or movement is "
+                        "involved), and 'why' when relevant.\n\n"
+                        "Good examples:\n"
+                        "- 'Mine 4 oak_log from the tree at (17, 68, 30), then "
+                        "  return to coordinates (5, 65, 38).'\n"
+                        "- 'Place 4 oak_planks at coordinates (5, 65, 37), "
+                        "  (5, 66, 37), (5, 67, 37), (5, 68, 37) — a vertical "
+                        "  pillar starting one block east of the player.'\n"
+                        "- 'Toss 16 oak_planks to the player named Fede3043.'\n"
+                        "- 'Follow the player named Fede3043 wherever they go.'\n\n"
+                        "Bad examples that the body model misinterprets:\n"
+                        "- 'Build a tall wall' → no coords, model picks bot's own\n"
+                        "  position and fails with bot_action_failed.\n"
+                        "- 'Stack oak_planks upward until materials run out' → "
+                        "  same problem; the model has no implicit notion of an\n"
+                        "  adjacent build face.\n"
+                        "- 'Dame 2 oak_planks' (Spanish 'give') → model crafts\n"
+                        "  instead of tossing.\n"
+                        "- 'If you have planks then build, otherwise gather' → "
+                        "  model emits one branch regardless of inventory.\n\n"
+                        "Ambiguous intents are okay only when the ambiguity is "
+                        "about the user's preference (not about geometry or "
+                        "available materials). The embodied service responds "
+                        "with an ask_clarification tool_call which surfaces a "
+                        "question to ask the user."
                     ),
                 },
                 "autonomy_level": {
@@ -132,7 +189,16 @@ EMBODIED_PLAN_SCHEMA = {
                         "Gemma-Andy to compose a recovery plan. Shape: "
                         "{tool: <name>, error_type: 'stuck'|'no_path'|'tool_timeout'|"
                         "'hazard_detected'|'missing_material'|'other', "
-                        "details: <string>}."
+                        "details: <string>}.\n\n"
+                        "Implementation note: Gemma-Andy v2-2-3 currently ignores "
+                        "the structured previous_error field 100% of the time "
+                        "(primitives_lab experiment 003+007). The Hermes-side "
+                        "handler works around this by prepending a narrative "
+                        "reformulation of previous_error to the intent text, "
+                        "which the model honors 100% of the time (experiment "
+                        "007 in_intent_directive at n=10). The structured field "
+                        "is still forwarded for forward-compat with a future "
+                        "model retrain."
                     ),
                 },
                 "deadline_seconds": {
@@ -149,6 +215,48 @@ EMBODIED_PLAN_SCHEMA = {
         },
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Replan composition
+# ---------------------------------------------------------------------------
+
+
+def _compose_replan_intent(intent: str, prev_err: dict[str, Any]) -> str:
+    """Embed `previous_error` as a recovery directive trailing the intent.
+
+    Why: `gemma-andy:e4b-v2-2-3-q8_0` ignores the structured `previous_error`
+    field 100% of the time (verified by primitives_lab experiment 003 + 007,
+    n=10 each). The same failure context embedded in the intent text shifts
+    the plan 100% of the time (experiment 007 `in_intent_directive`).
+
+    Composition shape — the order is load-bearing. Put the original intent
+    first, then the failure narration, then the recovery directive **last**.
+    The model has a strong last-instruction bias; in our first iteration the
+    narrative was prepended and the original (uncorrected) intent landed at
+    the tail — Andy re-emitted the failing tool. Trailing recovery shifts
+    the plan as designed in experiment 007.
+
+    This is a Hermes-side workaround — once Andy is retrained to honor the
+    structured field, the rewrite can be removed without breaking anything.
+    """
+    tool = prev_err.get("tool") or "the previous action"
+    error_type = prev_err.get("error_type") or "failed"
+    details = (prev_err.get("details") or "").strip()
+    # Past-tense framing: the original (failing) intent never appears as a
+    # live imperative — only as something we *tried* and that failed. This
+    # matches experiment 007's winning `in_intent_narrative` shape (9/10).
+    # The closing directive is what the model picks up as the active task.
+    parts = [
+        f"We tried to {intent}, but {tool} failed with error_type={error_type}.",
+    ]
+    if details:
+        parts.append(details)
+    parts.append(
+        "Compose a new plan that achieves the same outcome using the "
+        "actually-available state. Do not re-emit the failing action."
+    )
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +292,19 @@ def _handler(args: dict[str, Any], **_kw: Any) -> str:
     bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
     if bot_api_url:
         body["bot_api_url"] = bot_api_url
+
+    prev_err = body.get("previous_error")
+    if isinstance(prev_err, dict) and prev_err:
+        body["intent"] = _compose_replan_intent(intent, prev_err)
+        # Once we've embedded the failure narrative into the intent, forwarding
+        # the structured field is redundant — and worse, the daemoncraft
+        # `recovery_naive_retry` mitigation compares only tool names, so it
+        # flags `place_block` re-emission as a regression even when the model
+        # correctly swapped the block argument. Drop the structured field to
+        # avoid that false positive. Re-enable forwarding once Andy is
+        # retrained to honor previous_error directly (then this rewrite path
+        # can be retired entirely).
+        body.pop("previous_error", None)
 
     url = f"{_service_url()}/intent"
     timeout = _timeout()

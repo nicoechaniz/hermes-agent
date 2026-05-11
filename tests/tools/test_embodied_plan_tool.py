@@ -153,3 +153,127 @@ def test_service_url_respects_env(monkeypatch):
     from tools.embodied_plan_tool import _service_url
 
     assert _service_url() == "http://10.10.20.5:7790"
+
+
+# ---------------------------------------------------------------------------
+# Narrative replan composition (workaround for `previous_error` regression
+# verified by primitives_lab experiment 007).
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replan_intent_includes_tool_and_error_type():
+    from tools.embodied_plan_tool import _compose_replan_intent
+
+    out = _compose_replan_intent(
+        "build a wall with 4 oak_planks at the player",
+        {"tool": "place_block", "error_type": "missing_material",
+         "details": "no oak_log; have oak_planks(40)"},
+    )
+    assert "place_block" in out
+    assert "missing_material" in out
+    assert "no oak_log" in out
+    # Original intent appears in past-tense framing
+    assert "tried to build a wall with 4 oak_planks at the player" in out
+
+
+def test_compose_replan_intent_uses_past_tense_framing():
+    """The original (failing) intent must appear in past-tense framing — the
+    model has a strong last-instruction bias and we need the recovery
+    directive to be the active imperative, not the failing instruction."""
+    from tools.embodied_plan_tool import _compose_replan_intent
+
+    out = _compose_replan_intent(
+        "build a wall with 4 oak_log blocks",
+        {"tool": "place_block", "error_type": "missing_material",
+         "details": "no oak_log in inventory; have oak_planks(40)."},
+    )
+    # Original intent is wrapped in "We tried to ...", not stated as a goal
+    assert "tried to build a wall with 4 oak_log blocks" in out
+    # The closing sentence must be the recovery directive
+    sentences = [s.strip() for s in out.split(". ") if s.strip()]
+    last = sentences[-1].rstrip(".")
+    assert "oak_log" not in last, f"failing material in trailing directive: {last!r}"
+    assert any(kw in last.lower() for kw in ("compose", "plan", "re-emit", "avoid"))
+
+
+def test_compose_replan_intent_handles_missing_fields():
+    from tools.embodied_plan_tool import _compose_replan_intent
+
+    out = _compose_replan_intent("retry", {})
+    assert "the previous action" in out  # fallback
+    assert "failed" in out
+    assert "retry" in out
+
+
+def test_handler_prepends_narrative_when_previous_error_present():
+    """When previous_error is set, the handler must rewrite the intent on the
+    wire to embed the failure narrative — Gemma-Andy ignores the structured
+    field but honors in-intent narration (validated by 007 at n=10)."""
+    from tools.embodied_plan_tool import _handler
+
+    captured = {}
+    def fake_post(url, json=None, timeout=None):
+        captured["body"] = json
+        resp = MagicMock()
+        resp.json.return_value = {"ok": True}
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        _handler({
+            "intent": "Place 4 blocks at the player.",
+            "previous_error": {
+                "tool": "place_block",
+                "error_type": "missing_material",
+                "details": "no oak_log in inventory; have oak_planks(40).",
+            },
+        })
+
+    sent_intent = captured["body"]["intent"]
+    # Original intent appears, wrapped in past-tense framing
+    assert "tried to Place 4 blocks at the player" in sent_intent
+    # Failure narrative embedded
+    assert "place_block" in sent_intent
+    assert "missing_material" in sent_intent
+    assert "no oak_log" in sent_intent
+    # Structured field dropped — see handler comment for rationale
+    # (avoids daemoncraft `recovery_naive_retry` false-positive)
+    assert "previous_error" not in captured["body"]
+
+
+def test_handler_does_not_modify_intent_when_no_previous_error():
+    from tools.embodied_plan_tool import _handler
+
+    captured = {}
+    def fake_post(url, json=None, timeout=None):
+        captured["body"] = json
+        resp = MagicMock()
+        resp.json.return_value = {"ok": True}
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        _handler({"intent": "Toss 2 oak_planks to the player."})
+
+    assert captured["body"]["intent"] == "Toss 2 oak_planks to the player."
+    assert "previous_error" not in captured["body"]
+
+
+def test_handler_skips_narrative_when_previous_error_is_empty_dict():
+    """Defensive: an empty dict shouldn't trigger the narrative prepend."""
+    from tools.embodied_plan_tool import _handler
+
+    captured = {}
+    def fake_post(url, json=None, timeout=None):
+        captured["body"] = json
+        resp = MagicMock()
+        resp.json.return_value = {"ok": True}
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        _handler({"intent": "Do a thing.", "previous_error": {}})
+
+    assert captured["body"]["intent"] == "Do a thing."
+    # Empty dict is treated as "no error info" — neither prepended nor forwarded.
+    assert "previous_error" not in captured["body"] or captured["body"].get("previous_error") == {}
