@@ -328,6 +328,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # still hit the generic 256K fallback.
     "kimi-k3": 1_048_576,
     "kimi": 262144,
+    "kimi-k2.6": 262144,
+    "kimi-k2.5": 262144,
+    "kimi-k2": 262144,
+    "k2p6": 262144,
+    "k2p5": 262144,
     # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
     # so these fallbacks keep token budgeting / compression from probing down
     # to the 128k default. Ids are matched longest-first, so dated variants
