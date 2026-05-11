@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli import kanban_review as kr
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
@@ -792,6 +793,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- review (ship-review orchestration) ---
+    p_review = sub.add_parser(
+        "review",
+        help="Create a ship-review graph for a git change",
+    )
+    review_sub = p_review.add_subparsers(dest="review_action")
+    p_review_create = review_sub.add_parser(
+        "create",
+        help="Build a durable 5-card review graph (parent + 3 reviewers + synthesis)",
+    )
+    p_review_create.add_argument("title", help="Human title for the review")
+    p_review_create.add_argument("--base", required=True, help="Git base ref")
+    p_review_create.add_argument("--head", required=True, help="Git head ref")
+    p_review_create.add_argument("--repo-path", default=".", help="Path to repository (default: cwd)")
+    p_review_create.add_argument("--assignee", default=None, help="Profile to assign")
+    p_review_create.add_argument("--ready", action="store_true", help="Create cards in 'ready' instead of 'triage'")
+    p_review_create.add_argument("--skill", action="append", default=None, help="Skill to attach (repeatable)")
+    p_review_create.add_argument("--body", default=None, help="Extra context appended to parent body")
+    p_review_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -916,6 +937,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "specify":  _cmd_specify,
         "decompose":  _cmd_decompose,
         "gc":       _cmd_gc,
+        "review":   _cmd_review,
     }
     handler = handlers.get(action)
     if not handler:
@@ -2569,6 +2591,52 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     )
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    """Dispatch ``hermes kanban review <action>``."""
+    sub = getattr(args, "review_action", None)
+    if sub == "create":
+        return _cmd_review_create(args)
+    print("kanban review: unknown action. Use `hermes kanban review create --help`", file=sys.stderr)
+    return 2
+
+
+def _cmd_review_create(args: argparse.Namespace) -> int:
+    """Handle ``hermes kanban review create …``."""
+    import json as _json
+    from pathlib import Path
+    repo = Path(args.repo_path)
+    if not repo.exists() or not repo.is_dir():
+        print(f"kanban review: {args.repo_path} is not a directory", file=sys.stderr)
+        return 1
+    try:
+        result = kr.create_review_graph(
+            title=args.title,
+            base=args.base,
+            head=args.head,
+            repo_path=str(repo.resolve()),
+            assignee=args.assignee,
+            ready=args.ready,
+            skills=args.skill or [],
+            body=args.body,
+        )
+    except Exception as exc:
+        print(f"kanban review: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(result, indent=2, default=str))
+    else:
+        if result["created"]:
+            print("Created review graph")
+        else:
+            print("Found existing review graph")
+            print("all cards already existed")
+        print(f"parent:    {result['parent_id']}")
+        for idx, rid in enumerate(result['reviewer_ids'], 1):
+            print(f"reviewer {idx}: {rid}")
+        print(f"synthesis: {result['synthesis_id']}")
     return 0
 
 
