@@ -2092,7 +2092,9 @@ def run_doctor(args):
                 "User-Agent": _HERMES_USER_AGENT,
             }
             if base_url_host_matches(base, "api.kimi.com"):
-                headers["User-Agent"] = "claude-code/0.1.0"
+                from hermes_cli.auth import kimi_coding_default_headers
+                headers = kimi_coding_default_headers()
+                headers["Authorization"] = f"Bearer {key}"
             # Google's Generative Language API (generativelanguage.googleapis.com)
             # rejects ``Authorization: Bearer <api-key>`` with 401
             # ``ACCESS_TOKEN_TYPE_UNSUPPORTED`` — that header is reserved for
@@ -2102,6 +2104,7 @@ def run_doctor(args):
             if url and base_url_host_matches(url, "generativelanguage.googleapis.com"):
                 headers.pop("Authorization", None)
                 headers["x-goog-api-key"] = key
+
             r = httpx.get(url, headers=headers, timeout=10)
             if (
                 pname == "Alibaba/DashScope"
