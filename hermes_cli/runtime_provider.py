@@ -83,9 +83,30 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if normalized.endswith("/anthropic"):
         return "anthropic_messages"
+    if hostname == "api.kimi.com" and normalized.endswith("/coding/v1"):
+        # Kimi Coding Plan exposes an OpenAI-compatible surface at
+        # /coding/v1/chat/completions. Older fork configs stored this URL
+        # directly; keep routing those sessions through chat_completions so
+        # the OpenAI SDK sends Bearer auth and default_headers are applied.
+        return "chat_completions"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
+
+
+def _try_kimi_oauth_credentials() -> Optional[Dict[str, Any]]:
+    """Return Kimi CLI OAuth credentials when available, otherwise None."""
+    try:
+        from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
+
+        creds = resolve_kimi_coding_runtime_credentials()
+    except Exception:
+        return None
+    if not isinstance(creds, dict):
+        return None
+    if not str(creds.get("api_key") or "").strip():
+        return None
+    return creds
 
 
 def _auto_detect_local_model(base_url: str) -> str:
@@ -928,16 +949,15 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
-            # Kimi OAuth fallback: if no env API key, try reading kimi-cli credentials
-            if provider in {"kimi-coding", "kimi-coding-cn"} and not api_key:
-                try:
-                    from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
-                    oauth_creds = resolve_kimi_coding_runtime_credentials()
-                    api_key = oauth_creds.get("api_key", "")
+            # Kimi OAuth fallback: if no env API key, try reading kimi-cli credentials.
+            # This path is hit when the CLI passes an explicit base_url from config.yaml
+            # (for example the old /coding/v1 URL) but no KIMI_API_KEY is set.
+            if provider == "kimi-coding" and not api_key:
+                oauth_creds = _try_kimi_oauth_credentials()
+                if oauth_creds:
+                    api_key = str(oauth_creds.get("api_key", "") or "").strip()
                     if not base_url:
-                        base_url = oauth_creds.get("base_url", "").rstrip("/")
-                except Exception:
-                    pass
+                        base_url = str(oauth_creds.get("base_url", "") or "").rstrip("/")
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -1372,6 +1392,15 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # Kimi Coding is fork-supported through the user's existing Kimi CLI
+        # OAuth session (~/.kimi/credentials/kimi-code.json). If no KIMI_API_KEY
+        # exists, use that OAuth token instead of returning an empty key that the
+        # CLI later replaces with no-key-required (which drops Kimi's required
+        # X-Msh headers and causes 404s).
+        if provider == "kimi-coding" and not str(creds.get("api_key", "") or "").strip():
+            oauth_creds = _try_kimi_oauth_credentials()
+            if oauth_creds:
+                creds = oauth_creds
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
