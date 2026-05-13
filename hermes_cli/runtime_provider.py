@@ -134,6 +134,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     path = urlparse(normalized).path.rstrip("/")
     if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return "anthropic_messages"
+    if hostname == "api.kimi.com" and normalized.endswith("/coding/v1"):
+        return "chat_completions"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
@@ -216,6 +218,19 @@ def _host_derived_api_key(base_url: str) -> str:
         return ""
     env_name = f"{sanitized}_API_KEY"
     return (_getenv(env_name, "") or "").strip()
+
+
+def _try_kimi_oauth_credentials() -> Optional[Dict[str, Any]]:
+    """Return usable Kimi CLI OAuth credentials, if available."""
+    try:
+        from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
+
+        creds = resolve_kimi_coding_runtime_credentials()
+    except Exception:
+        return None
+    if not isinstance(creds, dict) or not has_usable_secret(creds.get("api_key")):
+        return None
+    return creds
 
 
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
@@ -2024,6 +2039,10 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        if provider == "kimi-coding" and not has_usable_secret(creds.get("api_key")):
+            oauth_creds = _try_kimi_oauth_credentials()
+            if oauth_creds:
+                creds = oauth_creds
         # An explicitly selected API-key provider is authoritative. Returning
         # a runtime with an empty key defers failure until the first request and
         # can make a later fallback look like a silent provider switch. Fail at
