@@ -547,6 +547,318 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     return default_url
 
 
+# =============================================================================
+# Kimi CLI OAuth (read credentials installed by `kimi login`)
+# =============================================================================
+
+KIMI_CODE_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+KIMI_CODE_OAUTH_HOST = "https://auth.kimi.com"
+
+
+def _kimi_cli_credentials_path() -> Path:
+    return Path.home() / ".kimi" / "credentials" / "kimi-code.json"
+
+
+def _kimi_cli_device_id_path() -> Path:
+    return Path.home() / ".kimi" / "device_id"
+
+
+def _kimi_cli_version() -> str:
+    """Return installed kimi-cli version, or a sensible default."""
+    try:
+        kimi_bin = shutil.which("kimi")
+        if kimi_bin:
+            result = subprocess.run(
+                [kimi_bin, "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for part in result.stdout.strip().split():
+                part = part.strip().rstrip(",")
+                if part and part[0].isdigit():
+                    return part
+    except Exception:
+        pass
+    return "1.37.0"
+
+
+def _read_kimi_cli_credentials() -> Dict[str, Any]:
+    """Read OAuth credentials from the installed Kimi CLI."""
+    cred_path = _kimi_cli_credentials_path()
+    if not cred_path.exists():
+        raise AuthError(
+            "Kimi CLI credentials not found. Run 'kimi login' first.",
+            provider="kimi-coding",
+            code="kimi_auth_missing",
+        )
+    try:
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to read Kimi CLI credentials from {cred_path}: {exc}",
+            provider="kimi-coding",
+            code="kimi_auth_read_failed",
+        ) from exc
+    if not isinstance(data, dict):
+        raise AuthError(
+            f"Invalid Kimi CLI credentials in {cred_path}.",
+            provider="kimi-coding",
+            code="kimi_auth_invalid",
+        )
+    return data
+
+
+def _save_kimi_cli_credentials(tokens: Dict[str, Any]) -> Path:
+    cred_path = _kimi_cli_credentials_path()
+    cred_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cred_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(tokens, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+    tmp_path.replace(cred_path)
+    return cred_path
+
+
+def _refresh_kimi_cli_credentials(
+    tokens: Dict[str, Any],
+    *,
+    base_url: str,
+    force_refresh: bool = False,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Refresh Kimi CLI OAuth credentials and persist the updated token file."""
+    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+    access_token = str(tokens.get("access_token", "") or "").strip()
+
+    if access_token and not force_refresh and not _kimi_oauth_token_is_expired(tokens.get("expires_at")):
+        return {
+            "provider": "kimi-coding",
+            "api_key": access_token,
+            "base_url": base_url,
+            "source": "kimi-cli-oauth",
+            "auth_file": str(_kimi_cli_credentials_path()),
+        }
+
+    if not refresh_token:
+        raise AuthError(
+            "Kimi CLI OAuth credentials are missing a refresh_token. Run `kimi login` to re-authenticate.",
+            provider="kimi-coding",
+            code="kimi_oauth_missing_refresh_token",
+            relogin_required=True,
+        )
+
+    timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+        response = client.post(
+            f"{KIMI_CODE_OAUTH_HOST.rstrip('/')}/api/oauth/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": KIMI_CODE_CLIENT_ID,
+            },
+        )
+
+    if response.status_code != 200:
+        code = "kimi_oauth_refresh_failed"
+        message = f"Kimi token refresh failed with status {response.status_code}."
+        relogin_required = False
+        try:
+            err = response.json()
+            if isinstance(err, dict):
+                err_code = err.get("error")
+                if isinstance(err_code, str) and err_code.strip():
+                    code = err_code.strip()
+                err_desc = err.get("error_description") or err.get("message")
+                if isinstance(err_desc, str) and err_desc.strip():
+                    message = f"Kimi token refresh failed: {err_desc.strip()}"
+        except Exception:
+            pass
+        if code in {"invalid_grant", "invalid_token", "invalid_request"}:
+            relogin_required = True
+        if response.status_code in (401, 403):
+            relogin_required = True
+        raise AuthError(
+            message,
+            provider="kimi-coding",
+            code=code,
+            relogin_required=relogin_required,
+        )
+
+    try:
+        refresh_payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            "Kimi token refresh returned invalid JSON.",
+            provider="kimi-coding",
+            code="kimi_oauth_refresh_invalid_json",
+            relogin_required=True,
+        ) from exc
+
+    if not isinstance(refresh_payload, dict):
+        raise AuthError(
+            "Kimi token refresh returned an invalid payload.",
+            provider="kimi-coding",
+            code="kimi_oauth_refresh_invalid_payload",
+            relogin_required=True,
+        )
+
+    refreshed_access = refresh_payload.get("access_token")
+    if not isinstance(refreshed_access, str) or not refreshed_access.strip():
+        raise AuthError(
+            "Kimi token refresh response was missing access_token.",
+            provider="kimi-coding",
+            code="kimi_oauth_refresh_missing_access_token",
+            relogin_required=True,
+        )
+
+    next_refresh = str(refresh_payload.get("refresh_token", refresh_token) or refresh_token).strip()
+    expires_in_raw = refresh_payload.get("expires_in")
+    try:
+        expires_in = float(expires_in_raw)
+    except Exception:
+        expires_in = None
+
+    updated = dict(tokens)
+    updated["access_token"] = refreshed_access.strip()
+    updated["refresh_token"] = next_refresh
+    if expires_in is not None and expires_in > 0:
+        updated["expires_at"] = time.time() + expires_in
+        updated["expires_in"] = expires_in
+    else:
+        updated["expires_at"] = tokens.get("expires_at", time.time() + 3600)
+        updated["expires_in"] = tokens.get("expires_in", 3600)
+    scope = refresh_payload.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        updated["scope"] = scope.strip()
+    token_type = refresh_payload.get("token_type")
+    if isinstance(token_type, str) and token_type.strip():
+        updated["token_type"] = token_type.strip()
+    _save_kimi_cli_credentials(updated)
+
+    return {
+        "provider": "kimi-coding",
+        "api_key": updated["access_token"],
+        "base_url": base_url,
+        "source": "kimi-cli-oauth-refresh",
+        "auth_file": str(_kimi_cli_credentials_path()),
+    }
+
+
+def _kimi_oauth_token_is_expired(expires_at: Any, skew_seconds: int = 300) -> bool:
+    try:
+        exp = float(expires_at)
+    except Exception:
+        return True
+    return exp <= (time.time() + max(0, skew_seconds))
+
+
+def kimi_coding_default_headers() -> Dict[str, str]:
+    """Return the X-Msh-* headers that Kimi's coding API now requires."""
+    import platform as _platform
+    import socket as _socket
+
+    device_id = ""
+    device_path = _kimi_cli_device_id_path()
+    if device_path.exists():
+        try:
+            device_id = device_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+
+    version = _kimi_cli_version()
+
+    headers: Dict[str, str] = {
+        "User-Agent": f"KimiCLI/{version}",
+        "X-Msh-Platform": "kimi_cli",
+        "X-Msh-Version": version,
+        "X-Msh-Device-Name": _platform.node() or _socket.gethostname(),
+        "X-Msh-Device-Model": _platform.machine(),
+        "X-Msh-Os-Version": _platform.version(),
+    }
+    if device_id:
+        headers["X-Msh-Device-Id"] = device_id
+    return headers
+
+
+def resolve_kimi_coding_runtime_credentials(
+    *,
+    prefer_cli_oauth: bool = True,
+    force_refresh: bool = False,
+    allow_api_key_fallback: bool = True,
+) -> Dict[str, Any]:
+    """Resolve credentials for kimi-coding, preferring Kimi CLI OAuth."""
+    base_url = os.getenv("KIMI_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        base_url = KIMI_CODE_BASE_URL
+
+    if prefer_cli_oauth:
+        try:
+            creds = _read_kimi_cli_credentials()
+            access_token = str(creds.get("access_token", "") or "").strip()
+            refresh_token = str(creds.get("refresh_token", "") or "").strip()
+            token_expired = _kimi_oauth_token_is_expired(creds.get("expires_at"))
+
+            if access_token and not force_refresh and not token_expired:
+                return {
+                    "provider": "kimi-coding",
+                    "api_key": access_token,
+                    "base_url": base_url,
+                    "source": "kimi-cli-oauth",
+                    "auth_file": str(_kimi_cli_credentials_path()),
+                }
+
+            if refresh_token:
+                return _refresh_kimi_cli_credentials(
+                    creds,
+                    base_url=base_url,
+                    force_refresh=force_refresh or token_expired or not access_token,
+                )
+
+            if access_token and not force_refresh:
+                return {
+                    "provider": "kimi-coding",
+                    "api_key": access_token,
+                    "base_url": base_url,
+                    "source": "kimi-cli-oauth",
+                    "auth_file": str(_kimi_cli_credentials_path()),
+                }
+
+            raise AuthError(
+                "Kimi CLI OAuth credentials are not usable. Run 'kimi login' to refresh them.",
+                provider="kimi-coding",
+                code="kimi_oauth_credentials_unusable",
+                relogin_required=True,
+            )
+        except AuthError:
+            if not allow_api_key_fallback:
+                raise
+            logger.debug("Kimi CLI OAuth unavailable, falling back to API key.")
+        except Exception as exc:
+            if not allow_api_key_fallback:
+                raise AuthError(
+                    f"Kimi CLI OAuth read failed: {exc}",
+                    provider="kimi-coding",
+                    code="kimi_oauth_read_failed",
+                    relogin_required=True,
+                ) from exc
+            logger.debug("Kimi CLI OAuth read failed: %s", exc)
+
+    api_key = os.getenv("KIMI_API_KEY", "").strip()
+    if api_key:
+        if not base_url:
+            base_url = _resolve_kimi_base_url(api_key, KIMI_CODE_BASE_URL, "")
+        return {
+            "provider": "kimi-coding",
+            "api_key": api_key,
+            "base_url": base_url,
+            "source": "env-api-key",
+        }
+
+    raise AuthError(
+        "No Kimi credentials found. Set KIMI_API_KEY or run 'kimi login'.",
+        provider="kimi-coding",
+        code="kimi_auth_missing",
+    )
+
 
 _PLACEHOLDER_SECRET_VALUES = {
     "*",
