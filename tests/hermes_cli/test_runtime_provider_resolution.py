@@ -1216,6 +1216,48 @@ def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
     assert resolved["base_url"] == "https://inference.pool.example/v1"
 
 
+def test_kimi_runtime_uses_cli_oauth_when_api_key_missing(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "kimi-coding",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "default": "kimi-k2.6",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "",
+            "base_url": "https://api.moonshot.ai/v1",
+            "source": "default",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_try_kimi_oauth_credentials",
+        lambda: {
+            "provider": "kimi-coding",
+            "api_key": "oauth-token",
+            "base_url": "https://api.kimi.com/coding",
+            "source": "kimi-cli-oauth",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["api_key"] == "oauth-token"
+    assert resolved["source"] == "kimi-cli-oauth"
+    assert resolved["base_url"] == "https://api.kimi.com/coding/v1"
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
     """A custom_providers entry named after a built-in *alias* (not a canonical
     provider name) must win over the built-in.  Regression guard for #15743:
