@@ -633,18 +633,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
 
-        if count >= 4:
-            # Hard block: stop returning content to break the loop
-            return json.dumps({
-                "error": (
-                    f"BLOCKED: You have read this exact file region {count} times in a row. "
-                    "The content has NOT changed. You already have this information. "
-                    "STOP re-reading and proceed with your task."
-                ),
-                "path": path,
-                "already_read": count,
-            }, ensure_ascii=False)
-        elif count >= 3:
+        if count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
