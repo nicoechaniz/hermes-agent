@@ -482,12 +482,11 @@ def get_anthropic_key() -> str:
 # api.moonshot.ai/v1 (the old default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
 #
-# Note: the base URL intentionally has NO /v1 suffix.  The /coding endpoint
-# speaks the Anthropic Messages protocol, and the anthropic SDK appends
-# "/v1/messages" internally — so "/coding" + SDK suffix → "/coding/v1/messages"
-# (the correct target). Using "/coding/v1" here would produce
-# "/coding/v1/v1/messages" (a 404).
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
+# Note: the /coding endpoint speaks the Anthropic Messages protocol.
+# The OpenAI-compatible surface is at /coding/v1/chat/completions.
+# Both /coding and /coding/v1 were valid at different times; current
+# Kimi Coding Plan requires /coding/v1 (without it → 404).
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
