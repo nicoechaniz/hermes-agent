@@ -135,6 +135,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._plan_last_progress_at: float = 0.0
         self._plan_gc_timeout: int = (config.extra or {}).get("plan_gc_timeout_seconds", 300)
         self._turn_counter: int = 0  # Sequential turn counter for agent logs
+        self._last_idle_wake_up: float = 0.0  # Throttle idle wake-ups
 
         # Load allowlist by UUID (preferred) or username fallback.
         raw_allow = os.getenv("DAEMONCRAFT_ALLOWED_USERS", "").strip()
@@ -664,6 +665,14 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         task = status.get("task")
         if task and task.get("status") == "stuck":
             logger.info("[DaemonCraft] Wake-up reason: bot stuck (%s)", task.get("error", "unknown")[:60])
+            return "wake_up"
+
+        # Idle heartbeat: wake up Steve so he can act autonomously
+        # (progress on achievements, scout, etc.) Throttle to avoid token spam.
+        now = time.time()
+        if now - self._last_idle_wake_up >= 30:
+            self._last_idle_wake_up = now
+            logger.info("[DaemonCraft] Wake-up reason: idle heartbeat (30s throttle)")
             return "wake_up"
 
         return "context"
