@@ -1506,16 +1506,6 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
-            # Kimi OAuth fallback: if no env API key, try reading kimi-cli credentials
-            if provider in {"kimi-coding", "kimi-coding-cn"} and not api_key:
-                try:
-                    from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
-                    oauth_creds = resolve_kimi_coding_runtime_credentials()
-                    api_key = oauth_creds.get("api_key", "")
-                    if not base_url:
-                        base_url = oauth_creds.get("base_url", "").rstrip("/")
-                except Exception:
-                    pass
 
         api_mode = "chat_completions"
         if provider == "copilot":
