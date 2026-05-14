@@ -1198,6 +1198,13 @@ def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
 
 
 def test_kimi_runtime_uses_cli_oauth_when_api_key_missing(monkeypatch):
+    """Kimi Coding must use ~/.kimi OAuth credentials when available.
+
+    Regression guard for the fork patch: resolve_api_key_provider_credentials()
+    now centralizes OAuth resolution, so the runtime provider receives the
+    OAuth token directly instead of falling through to no-key-required (which
+    drops Kimi's required X-Msh headers and causes 404s).
+    """
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
     monkeypatch.setattr(rp, "load_pool", lambda provider: None)
     monkeypatch.setattr(
@@ -1214,18 +1221,8 @@ def test_kimi_runtime_uses_cli_oauth_when_api_key_missing(monkeypatch):
         "resolve_api_key_provider_credentials",
         lambda provider: {
             "provider": provider,
-            "api_key": "",
-            "base_url": "https://api.moonshot.ai/v1",
-            "source": "default",
-        },
-    )
-    monkeypatch.setattr(
-        rp,
-        "_try_kimi_oauth_credentials",
-        lambda: {
-            "provider": "kimi-coding",
             "api_key": "oauth-token",
-            "base_url": "https://api.kimi.com/coding",
+            "base_url": "https://api.kimi.com/coding/v1",
             "source": "kimi-cli-oauth",
         },
     )
