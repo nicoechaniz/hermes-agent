@@ -220,19 +220,6 @@ def _host_derived_api_key(base_url: str) -> str:
     return (_getenv(env_name, "") or "").strip()
 
 
-def _try_kimi_oauth_credentials() -> Optional[Dict[str, Any]]:
-    """Return usable Kimi CLI OAuth credentials, if available."""
-    try:
-        from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
-
-        creds = resolve_kimi_coding_runtime_credentials()
-    except Exception:
-        return None
-    if not isinstance(creds, dict) or not has_usable_secret(creds.get("api_key")):
-        return None
-    return creds
-
-
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
     """Decide whether a configured ``model.base_url`` may back native Anthropic.
 
@@ -1521,16 +1508,6 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
-            # Kimi OAuth fallback: if no env API key, try reading kimi-cli credentials
-            if provider in {"kimi-coding", "kimi-coding-cn"} and not api_key:
-                try:
-                    from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
-                    oauth_creds = resolve_kimi_coding_runtime_credentials()
-                    api_key = oauth_creds.get("api_key", "")
-                    if not base_url:
-                        base_url = oauth_creds.get("base_url", "").rstrip("/")
-                except Exception:
-                    pass
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -2088,10 +2065,6 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        if provider == "kimi-coding" and not has_usable_secret(creds.get("api_key")):
-            oauth_creds = _try_kimi_oauth_credentials()
-            if oauth_creds:
-                creds = oauth_creds
         # An explicitly selected API-key provider is authoritative. Returning
         # a runtime with an empty key defers failure until the first request and
         # can make a later fallback look like a silent provider switch. Fail at
