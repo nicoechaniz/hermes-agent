@@ -75,6 +75,83 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# Default summarizer preamble (used when config does not override).
+_DEFAULT_SUMMARIZER_PREAMBLE = (
+    "You are a summarization agent creating a context checkpoint. "
+    "Your output will be injected as reference material for a DIFFERENT "
+    "assistant that continues the conversation. "
+    "Do NOT respond to any questions or requests in the conversation — "
+    "only output the structured summary. "
+    "Do NOT include any preamble, greeting, or prefix. "
+    "Write the summary in the same language the user was using in the "
+    "conversation — do not translate or switch to English. "
+    "NEVER include API keys, tokens, passwords, secrets, credentials, "
+    "or connection strings in the summary — replace any that appear "
+    "with [REDACTED]. Note that the user had credentials present, but "
+    "do not preserve their values."
+)
+
+# Default structured template sections (used when config does not override).
+# The placeholder {summary_budget} is replaced with the computed token budget.
+_DEFAULT_TEMPLATE_SECTIONS = """## Active Task
+[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
+task assignment verbatim — the exact words they used. If multiple tasks
+were requested and only some are done, list only the ones NOT yet completed.
+The next assistant must pick up exactly here. Example:
+"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
+If no outstanding task exists, write "None."]
+
+## Goal
+[What the user is trying to accomplish overall]
+
+## Constraints & Preferences
+[User preferences, coding style, constraints, important decisions]
+
+## Completed Actions
+[Numbered list of concrete actions taken — include tool used, target, and outcome.
+Format each as: N. ACTION target — outcome [tool: name]
+Example:
+1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
+2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
+3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
+Be specific with file paths, commands, line numbers, and results.]
+
+## Active State
+[Current working state — include:
+- Working directory and branch (if applicable)
+- Modified/created files with brief note on each
+- Test status (X/Y passing)
+- Any running processes or servers
+- Environment details that matter]
+
+## In Progress
+[Work currently underway — what was being done when compaction fired]
+
+## Blocked
+[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
+
+## Key Decisions
+[Important technical decisions and WHY they were made]
+
+## Resolved Questions
+[Questions the user asked that were ALREADY answered — include the answer so the next assistant does not re-answer them]
+
+## Pending User Asks
+[Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
+
+## Relevant Files
+[Files read, modified, or created — with brief note on each]
+
+## Remaining Work
+[What remains to be done — framed as context, not instructions]
+
+## Critical Context
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
+
+Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+
+Write only the summary body. Do not include any preamble or prefix."""
+
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
@@ -415,6 +492,8 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        summary_preamble: str = None,
+        summary_template: str = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -425,6 +504,8 @@ class ContextCompressor(ContextEngine):
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
+        self.summary_preamble = summary_preamble
+        self.summary_template = summary_template
         self.quiet_mode = quiet_mode
 
         self.context_length = get_model_context_length(
@@ -896,9 +977,18 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 
 Write only the summary body. Do not include any preamble or prefix."""
 
+        # Honour caller overrides (set via summary_preamble / summary_template
+        # kwargs at construction); fall back to the defaults defined above.
+        preamble = self.summary_preamble or _summarizer_preamble
+        template = self.summary_template or _template_sections
+        # Custom templates may include {summary_budget} as a placeholder. The
+        # default template is already an f-string and has no placeholders left.
+        if self.summary_template and "{summary_budget}" in template:
+            template = template.replace("{summary_budget}", str(summary_budget))
+
         if self._previous_summary:
             # Iterative update: preserve existing info, add new progress
-            prompt = f"""{_summarizer_preamble}
+            prompt = f"""{preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
@@ -910,10 +1000,10 @@ NEW TURNS TO INCORPORATE:
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
 
-{_template_sections}"""
+{template}"""
         else:
             # First compaction: summarize from scratch
-            prompt = f"""{_summarizer_preamble}
+            prompt = f"""{preamble}
 
 Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
 
@@ -922,7 +1012,7 @@ TURNS TO SUMMARIZE:
 
 Use this exact structure:
 
-{_template_sections}"""
+{template}"""
 
         # Inject focus topic guidance when the user provides one via /compress <focus>.
         # This goes at the end of the prompt so it takes precedence.
@@ -1185,6 +1275,26 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx += 1
         return idx
 
+    def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
+        """Total count of head messages to protect.
+
+        ``protect_first_n`` is defined as *additional* messages protected
+        beyond the system prompt.  The system prompt (if present at index 0)
+        is always implicitly protected — it's load-bearing context that
+        must never be summarised away.  This keeps semantics stable across
+        call paths where the system prompt may or may not be included in
+        the ``messages`` list (e.g. the gateway ``/compress`` handler
+        strips it before calling compress()).
+
+        Examples:
+          protect_first_n=0 → system prompt only (or nothing if no system msg)
+          protect_first_n=3 → system + first 3 non-system messages
+        """
+        head = 0
+        if messages and messages[0].get("role") == "system":
+            head = 1
+        return head + self.protect_first_n
+
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
         tool_call / result group.
@@ -1343,7 +1453,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         skip the LLM call when the transcript is still entirely inside
         the protected head/tail.
         """
-        compress_start = self._align_boundary_forward(messages, self.protect_first_n)
+        compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         return compress_start < compress_end
 
@@ -1379,7 +1489,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_model = None
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -1399,8 +1509,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
+        compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
+        # Always preserve the system prompt as a literal message even when
+        # protect_first_n is 0. The user wants early conversation turns
+        # summarized, not the instructions that define agent identity.
+        if compress_start == 0 and messages and messages[0].get("role") == "system":
+            compress_start = 1
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)

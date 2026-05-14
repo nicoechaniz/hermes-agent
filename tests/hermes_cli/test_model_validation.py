@@ -555,7 +555,6 @@ class TestValidateApiNotFound:
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
-
 # -- validate — API unreachable — soft-accept via catalog or warning --------
 
 class TestValidateApiFallback:
@@ -830,3 +829,4 @@ class TestProbeApiModelsUserAgent:
         assert ua and ua.startswith("hermes-cli/")
         # No Authorization was set, but UA must still be present.
         assert req.get_header("Authorization") is None
+

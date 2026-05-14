@@ -41,3 +41,8 @@ class TestAnthropicHostHardening:
         # proxies) expose the Anthropic protocol under a ``/anthropic`` suffix.
         # That convention must still resolve to anthropic_messages.
         assert determine_api_mode("", "https://api.minimax.io/anthropic") == "anthropic_messages"
+
+
+class TestKimiCodingRouting:
+    def test_kimi_coding_stays_chat_completions(self):
+        assert determine_api_mode("kimi-coding", "https://api.kimi.com/coding/v1") == "chat_completions"

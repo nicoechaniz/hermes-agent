@@ -83,7 +83,11 @@ compression:
   enabled: true              # Enable/disable compression (default: true)
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
+  protect_first_n: 3         # Messages from start to keep uncompressed (default: 3)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  prompt:
+    preamble: ""             # Optional custom summarizer preamble (empty = default)
+    template: ""             # Optional custom summary template (empty = default)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -99,8 +103,10 @@ auxiliary:
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
+| `protect_first_n` | `3` | ≥0 | Messages from start to keep uncompressed. 0 = summarize everything into summary + tail. |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
-| `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `prompt.preamble` | `""` | string | Optional override for the summarizer preamble (empty = default) |
+| `prompt.template` | `""` | string | Optional override for summary template (empty = default). Use `{summary_budget}` placeholder. |
 
 ### Computed Values (for a 200K context model at defaults)
 
@@ -129,14 +135,14 @@ outputs (file contents, terminal output, search results).
 ### Phase 2: Determine Boundaries
 
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────┐
 │  Message list                                               │
-│                                                             │
-│  [0..2]  ← protect_first_n (system + first exchange)        │
-│  [3..N]  ← middle turns → SUMMARIZED                        │
-│  [N..end] ← tail (by token budget OR protect_last_n)        │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+│                                                            │
+│  [0..first_n-1]  ← protect_first_n (system + first exchange)│
+│  [first_n..N]    ← middle turns → SUMMARIZED                │
+│  [N..end]        ← tail (by token budget OR protect_last_n) │
+│                                                            │
+└──────────────────────────────────────────────────┘
 ```
 
 Tail protection is **token-budget based**: walks backward from the end,

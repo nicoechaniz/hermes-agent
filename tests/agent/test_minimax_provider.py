@@ -335,7 +335,6 @@ class TestMinimaxSwitchModelCredentialGuard:
         from unittest.mock import patch, MagicMock
 
         with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.provider = "anthropic"
             agent.model = "claude-sonnet-4"

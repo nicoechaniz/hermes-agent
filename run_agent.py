@@ -181,6 +181,10 @@ from agent.tool_guardrails import (
     append_toolguard_guidance,
     toolguard_synthetic_result,
 )
+from agent.tool_result_classification import (
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
+    file_mutation_result_landed,
+)
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -349,7 +353,7 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
 # Tools that mutate files on disk.  Used by the per-turn verifier that
 # surfaces silently-failed file edits so the model can't over-claim success.
-_FILE_MUTATING_TOOLS = frozenset({"write_file", "patch"})
+# Imported above as `_FILE_MUTATING_TOOLS` from `agent.tool_result_classification`.
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
@@ -1271,7 +1275,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -2124,7 +2128,29 @@ class AIAgent:
             pass
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+        compression_protect_first = int(_compression_cfg.get("protect_first_n", 3))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        # protect_first_n is the number of non-system messages to protect at
+        # the head, in addition to the system prompt (which is always
+        # implicitly protected by the compressor).  Floor at 0 — a value of
+        # 0 means "preserve only the system prompt + summary + tail", which
+        # is a legitimate (and common) configuration for long-running
+        # rolling-compaction sessions.
+        compression_protect_first = max(
+            0, int(_compression_cfg.get("protect_first_n", 3))
+        )
+
+        # Optional custom compression prompt overrides
+        _prompt_cfg = _compression_cfg.get("prompt", {})
+        if not isinstance(_prompt_cfg, dict):
+            _prompt_cfg = {}
+        compression_summary_preamble = _prompt_cfg.get("preamble") or None
+        compression_summary_template = _prompt_cfg.get("template") or None
+        # Strip whitespace so empty strings in YAML are treated as "not set"
+        if compression_summary_preamble and not compression_summary_preamble.strip():
+            compression_summary_preamble = None
+        if compression_summary_template and not compression_summary_template.strip():
+            compression_summary_template = None
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -2204,6 +2230,10 @@ class AIAgent:
             _custom_providers = _agent_cfg.get("custom_providers")
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
+
+        # Store for reuse by _check_compression_model_feasibility (auxiliary
+        # compression model context-length detection needs the same list).
+        self._custom_providers = _custom_providers
 
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
@@ -2325,7 +2355,7 @@ class AIAgent:
             self.context_compressor = ContextCompressor(
                 model=self.model,
                 threshold_percent=compression_threshold,
-                protect_first_n=3,
+                protect_first_n=compression_protect_first,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
                 summary_model_override=None,
@@ -2335,6 +2365,8 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                summary_preamble=compression_summary_preamble,
+                summary_template=compression_summary_template,
             )
         self.compression_enabled = compression_enabled
 
@@ -3247,6 +3279,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
+                custom_providers=self._custom_providers,
             )
 
             # Hard floor: the auxiliary compression model must have at least
@@ -3488,11 +3521,13 @@ class AIAgent:
             OpenAI-wire proxies expect the looser layout).
 
         Third-party providers using the native Anthropic transport
-        (``api_mode == 'anthropic_messages'`` + Claude-named model) get
-        caching with the native layout so they benefit from the same
-        cost reduction as direct Anthropic callers, provided their
-        gateway implements the Anthropic cache_control contract
-        (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
+        (``api_mode == 'anthropic_messages'``) get caching with the
+        native layout when the model is Claude-named or the provider
+        is a known Anthropic-compatible gateway that documents
+        ``cache_control`` support for its own models (MiniMax).
+        LiteLLM proxies and Zhipu GLM also implement the contract
+        but are only enabled for Claude-named models until they
+        document cache support for their own model families.
 
         Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
         Alibaba (DashScope) also honour Anthropic-style ``cache_control``
@@ -4277,18 +4312,28 @@ class AIAgent:
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
                     _parent_runtime = self._current_main_runtime()
+                    _parent_api_mode = _parent_runtime.get("api_mode") or None
+                    # The review fork needs to call agent-loop tools (memory,
+                    # skill_manage). Those tools require Hermes' own dispatch,
+                    # which the codex_app_server runtime bypasses entirely
+                    # (it runs the turn inside codex's subprocess). So when
+                    # the parent is on codex_app_server, downgrade the review
+                    # fork to codex_responses — same auth/credentials, but
+                    # talks to the OpenAI Responses API directly so Hermes
+                    # owns the loop and the agent-loop tools dispatch.
+                    if _parent_api_mode == "codex_app_server":
+                        _parent_api_mode = "codex_responses"
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=16,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
-                        api_mode=_parent_runtime.get("api_mode") or None,
+                        api_mode=_parent_api_mode,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
-                        enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -4305,11 +4350,73 @@ class AIAgent:
                     # _vprint and leak past the stdout redirect (they go via
                     # _print_fn/status_callback, which bypass sys.stdout).
                     review_agent.suppress_status_output = True
+                    # Inherit the parent's cached system prompt verbatim so
+                    # the review fork's outbound HTTP request hits the same
+                    # Anthropic/OpenRouter prefix cache the parent warmed.
+                    # Without this, the fork rebuilds the system prompt from
+                    # scratch (fresh _hermes_now() timestamp, fresh
+                    # session_id, narrower toolset → different skills_prompt)
+                    # and the byte-exact prefix-cache key misses. See
+                    # issue #25322 and PR #17276 for the full analysis +
+                    # measured impact (~26% end-to-end cost reduction on
+                    # Sonnet 4.5).
+                    review_agent._cached_system_prompt = self._cached_system_prompt
+                    # Defensive: pin session_start + session_id to the
+                    # parent's so any code path that re-renders parts of
+                    # the system prompt (compression, plugin hooks) still
+                    # produces byte-identical output. The cached-prompt
+                    # assignment above already short-circuits the normal
+                    # rebuild path, but these pins guarantee parity even
+                    # if a future code path bypasses the cache.
+                    review_agent.session_start = self.session_start
+                    review_agent.session_id = self.session_id
 
-                    review_agent.run_conversation(
-                        user_message=prompt,
-                        conversation_history=messages_snapshot,
+                    from model_tools import get_tool_definitions
+                    from hermes_cli.plugins import (
+                        set_thread_tool_whitelist,
+                        clear_thread_tool_whitelist,
                     )
+
+                    review_whitelist = {
+                        t["function"]["name"]
+                        for t in get_tool_definitions(
+                            enabled_toolsets=["memory", "skills"],
+                            quiet_mode=True,
+                        )
+                    }
+                    set_thread_tool_whitelist(
+                        review_whitelist,
+                        deny_msg_fmt=(
+                            "Background review denied non-whitelisted tool: "
+                            "{tool_name}. Only memory/skill tools are allowed."
+                        ),
+                    )
+                    try:
+                        review_agent.run_conversation(
+                            user_message=(
+                                prompt
+                                + "\n\nYou can only call memory and skill "
+                                "management tools. Other tools will be denied "
+                                "at runtime — do not attempt them."
+                            ),
+                            conversation_history=messages_snapshot,
+                        )
+                    finally:
+                        clear_thread_tool_whitelist()
+
+                    # Tear down memory providers while stdout is still
+                    # redirected so background thread teardown (Honcho flush,
+                    # Hindsight sync, etc.) stays silent.  The finally block
+                    # below is a safety net for the exception path.
+                    try:
+                        review_agent.shutdown_memory_provider()
+                    except Exception:
+                        pass
+                    try:
+                        review_agent.close()
+                    except Exception:
+                        pass
+                    review_agent = None
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user. Tool messages
@@ -4340,21 +4447,24 @@ class AIAgent:
                 logger.warning("Background memory/skill review failed: %s", e)
                 self._emit_auxiliary_failure("background review", e)
             finally:
-                # Background review agents can initialize memory providers
-                # (for example Hindsight) that own their own network clients.
-                # Explicitly stop those providers before closing the agent so
-                # their aiohttp sessions do not leak until GC/process exit.
-                # Then close all remaining resources (httpx client,
-                # subprocesses, etc.) so GC doesn't try to clean them up on a
-                # dead asyncio event loop (which produces "Event loop is
-                # closed" errors).
+                # Safety-net cleanup for the exception path.  Normal
+                # completion already shut down inside redirect_stdout above.
+                # Re-open devnull here so any teardown output (Honcho flush,
+                # Hindsight sync, background thread joins) stays silent even
+                # on the exception path where redirect_stdout already exited.
                 if review_agent is not None:
                     try:
-                        review_agent.shutdown_memory_provider()
-                    except Exception:
-                        pass
-                    try:
-                        review_agent.close()
+                        with open(os.devnull, "w", encoding="utf-8") as _fn, \
+                             contextlib.redirect_stdout(_fn), \
+                             contextlib.redirect_stderr(_fn):
+                            try:
+                                review_agent.shutdown_memory_provider()
+                            except Exception:
+                                pass
+                            try:
+                                review_agent.close()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 # Clear the approval callback on this bg-review thread so a
@@ -5394,7 +5504,8 @@ class AIAgent:
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
             return
-        if is_error:
+        landed = file_mutation_result_landed(tool_name, result)
+        if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we
@@ -6448,6 +6559,10 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
+    def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
+        """Convert chat-completions tool schemas to Responses function-tool schemas."""
+        return _codex_responses_tools(tools if tools is not None else self.tools)
+
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
         """Generate a deterministic call_id from tool call content.
@@ -6470,6 +6585,33 @@ class AIAgent:
     ) -> str:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
         return _codex_derive_responses_function_call_id(call_id, response_item_id)
+
+    def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert internal chat-style messages to Responses input items."""
+        return _codex_chat_messages_to_responses_input(messages)
+
+    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+        return _codex_preflight_codex_input_items(raw_items)
+
+    def _preflight_codex_api_kwargs(
+        self,
+        api_kwargs: Any,
+        *,
+        allow_stream: bool = False,
+    ) -> Dict[str, Any]:
+        return _codex_preflight_codex_api_kwargs(api_kwargs, allow_stream=allow_stream)
+
+    def _extract_responses_message_text(self, item: Any) -> str:
+        """Extract assistant text from a Responses message output item."""
+        return _codex_extract_responses_message_text(item)
+
+    def _extract_responses_reasoning_text(self, item: Any) -> str:
+        """Extract a compact reasoning text from a Responses reasoning item."""
+        return _codex_extract_responses_reasoning_text(item)
+
+    def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
+        """Normalize a Responses API object to an assistant_message-like object."""
+        return _codex_normalize_codex_response(response)
 
     def _thread_identity(self) -> str:
         thread = threading.current_thread()
@@ -7186,6 +7328,41 @@ class AIAgent:
             return False
 
         logger.info("Copilot credentials refreshed from %s", token_source)
+        return True
+
+    def _try_refresh_kimi_client_credentials(self, *, force: bool = True) -> bool:
+        if self.provider not in {"kimi-coding", "kimi-coding-cn"} and not base_url_host_matches(self.base_url, "api.kimi.com"):
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_kimi_coding_runtime_credentials, kimi_coding_default_headers
+
+            creds = resolve_kimi_coding_runtime_credentials(
+                force_refresh=force,
+                allow_api_key_fallback=False,
+            )
+        except Exception as exc:
+            logger.debug("Kimi credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        source = str(creds.get("source") or "")
+        if source not in {"kimi-cli-oauth", "kimi-cli-oauth-refresh"}:
+            return False
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._client_kwargs["default_headers"] = kimi_coding_default_headers()
+
+        if not self._replace_primary_openai_client(reason="kimi_credential_refresh"):
+            return False
         return True
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
@@ -10026,11 +10203,12 @@ class AIAgent:
 
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400).
+        #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
         """
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
+            or self._needs_mimo_tool_reasoning()
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
@@ -10060,6 +10238,22 @@ class AIAgent:
             provider == "deepseek"
             or "deepseek" in model
             or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+    def _needs_mimo_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Xiaomi MiMo thinking mode.
+
+        MiMo thinking mode requires ``reasoning_content`` on every assistant
+        tool-call message when replaying history; omitting it causes HTTP 400.
+        Refs: https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/passing-back-reasoning_content
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider == "xiaomi"
+            or "mimo" in model
+            or base_url_host_matches(self.base_url, "api.xiaomimimo.com")
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
@@ -10300,6 +10494,9 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
+        )
+        self._emit_status(
+            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
         )
 
         # Notify external memory provider before compression discards context
@@ -10626,6 +10823,7 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+                parent_agent=self,
             )
 
     @staticmethod
@@ -11017,7 +11215,9 @@ class AIAgent:
                 env=get_active_env(effective_task_id),
             ) if not _is_multimodal_tool_result(function_result) else function_result
 
-            subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
+            subdir_hints = None
+            if self._subdirectory_hints:
+                subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
                 if _is_multimodal_tool_result(function_result):
                     # Append the hint to the text summary part so the model
@@ -11347,6 +11547,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        parent_agent=self,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -11367,6 +11568,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        parent_agent=self,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -11444,12 +11646,13 @@ class AIAgent:
             ) if not _is_multimodal_tool_result(function_result) else function_result
 
             # Discover subdirectory context files from tool arguments
-            subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
-            if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
+            if self._subdirectory_hints:
+                subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
+                if subdir_hints:
+                    if _is_multimodal_tool_result(function_result):
+                        _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                    else:
+                        function_result += subdir_hints
 
             # Unwrap _multimodal dicts to an OpenAI-style content list
             # (see parallel path for rationale). String results pass through.
@@ -12162,6 +12365,20 @@ class AIAgent:
                 pass
 
         _turn_start_time = time.time()
+        # Optional opt-in runtime: if api_mode == codex_app_server, hand the
+        # turn to the codex app-server subprocess (terminal/file ops/patching
+        # all run inside Codex). Default Hermes path is bypassed entirely.
+        # See agent/transports/codex_app_server_session.py for the adapter
+        # and references/codex-app-server-runtime.md for the rationale.
+        if self.api_mode == "codex_app_server":
+            return self._run_codex_app_server_turn(
+                user_message=user_message,
+                original_user_message=original_user_message,
+                messages=messages,
+                effective_task_id=effective_task_id,
+                should_review_memory=_should_review_memory,
+            )
+
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -12498,6 +12715,7 @@ class AIAgent:
             anthropic_auth_retry_attempted=False
             nous_auth_retry_attempted=False
             copilot_auth_retry_attempted=False
+            kimi_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
             image_shrink_retry_attempted = False
             oauth_1m_beta_retry_attempted = False
@@ -12565,7 +12783,6 @@ class AIAgent:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
-
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
                         _invoke_hook(
@@ -13630,6 +13847,18 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}🔐 Copilot credentials refreshed after 401. Retrying request...")
                             continue
                     if (
+                        status_code == 401
+                        and not kimi_auth_retry_attempted
+                        and (
+                            self.provider in {"kimi-coding", "kimi-coding-cn"}
+                            or base_url_host_matches(self.base_url, "api.kimi.com")
+                        )
+                    ):
+                        kimi_auth_retry_attempted = True
+                        if self._try_refresh_kimi_client_credentials(force=True):
+                            print(f"{self.log_prefix}🔐 Kimi OAuth refreshed after 401. Retrying request...")
+                            continue
+                    if (
                         self.api_mode == "anthropic_messages"
                         and status_code == 401
                         and hasattr(self, '_anthropic_api_key')
@@ -14436,8 +14665,7 @@ class AIAgent:
                     _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
                 normalized = _transport.normalize_response(response, **_normalize_kwargs)
                 assistant_message = normalized
-                finish_reason = normalized.finish_reason
-                
+                finish_reason = normalized.finish_reason                
                 # Normalize content to string — some OpenAI-compatible servers
                 # (llama-server, etc.) return content as a dict or list instead
                 # of a plain string, which crashes downstream .strip() calls.
@@ -14837,7 +15065,19 @@ class AIAgent:
                         except Exception:
                             pass
 
-                    self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    execute_tool_calls = self._execute_tool_calls
+                    try:
+                        import inspect as _inspect
+                        _execute_params = _inspect.signature(execute_tool_calls).parameters
+                        _accepts_api_call_count = len(_execute_params) >= 4 or any(
+                            p.kind == p.VAR_POSITIONAL for p in _execute_params.values()
+                        )
+                    except Exception:
+                        _accepts_api_call_count = True
+                    if _accepts_api_call_count:
+                        execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    else:
+                        execute_tool_calls(assistant_message, messages, effective_task_id)
 
                     if self._tool_guardrail_halt_decision is not None:
                         decision = self._tool_guardrail_halt_decision
@@ -15287,6 +15527,7 @@ class AIAgent:
                                 messages.append(err_msg)
                     break
                 
+
                 # Non-tool errors don't need a synthetic message injected.
                 # The error is already printed to the user (line above), and
                 # the retry loop continues.  Injecting a fake user/assistant
@@ -15610,6 +15851,130 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
+
+    def _run_codex_app_server_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Codex app-server runtime path. Hands the entire turn to a `codex
+        app-server` subprocess and projects its events back into Hermes'
+        messages list so memory/skill review keep working.
+
+        Called from run_conversation() when self.api_mode == "codex_app_server".
+        Returns the same dict shape as the chat_completions path.
+        """
+        from agent.transports.codex_app_server_session import CodexAppServerSession
+
+        # Lazy session: one CodexAppServerSession per AIAgent instance.
+        # Spawned on first turn, reused across turns, closed at AIAgent
+        # shutdown (see _cleanup hook).
+        if not hasattr(self, "_codex_session") or self._codex_session is None:
+            cwd = getattr(self, "session_cwd", None) or os.getcwd()
+            # Approval callback: defer to Hermes' standard prompt flow if a
+            # CLI thread has installed one. Gateway / cron contexts get the
+            # codex-side fail-closed default.
+            try:
+                from tools.terminal_tool import _get_approval_callback
+                approval_callback = _get_approval_callback()
+            except Exception:
+                approval_callback = None
+            self._codex_session = CodexAppServerSession(
+                cwd=cwd,
+                approval_callback=approval_callback,
+            )
+
+        # NOTE: the user message is ALREADY appended to messages by the
+        # standard run_conversation() flow (line ~11823) before the early
+        # return reaches us. Do NOT append again — that would duplicate.
+
+        try:
+            turn = self._codex_session.run_turn(user_input=user_message)
+        except Exception as exc:
+            logger.exception("codex app-server turn failed")
+            return {
+                "final_response": (
+                    f"Codex app-server turn failed: {exc}. "
+                    f"Fall back to default runtime with `/codex-runtime auto`."
+                ),
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                "error": str(exc),
+            }
+
+        # Splice projected messages into the conversation. The projector emits
+        # standard {role, content, tool_calls, tool_call_id} entries, which
+        # is exactly what curator.py / sessions DB expect.
+        if turn.projected_messages:
+            messages.extend(turn.projected_messages)
+
+        # Counter ticks for the self-improvement loop.
+        # _turns_since_memory and _user_turn_count are ALREADY incremented
+        # in the run_conversation() pre-loop block (lines ~11793-11817) so we
+        # do NOT touch them here — that would double-count.
+        # Only _iters_since_skill needs explicit increment, since the
+        # chat_completions loop bumps it per tool iteration (line ~12110)
+        # and that loop is bypassed on this path.
+        self._iters_since_skill = (
+            getattr(self, "_iters_since_skill", 0) + turn.tool_iterations
+        )
+
+        # Now check the skill nudge AFTER iters were incremented — same
+        # pattern the chat_completions path uses (line ~15432).
+        should_review_skills = False
+        if (
+            self._skill_nudge_interval > 0
+            and self._iters_since_skill >= self._skill_nudge_interval
+            and "skill_manage" in self.valid_tool_names
+        ):
+            should_review_skills = True
+            self._iters_since_skill = 0
+
+        # External memory provider sync (mirrors line ~15439). Skipped on
+        # interrupt/error to avoid feeding partial transcripts to memory.
+        if not turn.interrupted and turn.error is None:
+            try:
+                self._sync_external_memory_for_turn(
+                    original_user_message=original_user_message,
+                    final_response=turn.final_text,
+                    interrupted=False,
+                )
+            except Exception:
+                logger.debug("external memory sync raised", exc_info=True)
+
+        # Background review fork — same cadence + signature as the default
+        # path (line ~15449). Only fires when a trigger actually tripped AND
+        # we have a real final response.
+        if (
+            turn.final_text
+            and not turn.interrupted
+            and (should_review_memory or should_review_skills)
+        ):
+            try:
+                self._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=should_review_memory,
+                    review_skills=should_review_skills,
+                )
+            except Exception:
+                logger.debug("background review spawn raised", exc_info=True)
+
+        return {
+            "final_response": turn.final_text,
+            "messages": messages,
+            "api_calls": 1,  # one app-server "turn" maps to one logical API call
+            "completed": not turn.interrupted and turn.error is None,
+            "partial": turn.interrupted or turn.error is not None,
+            "error": turn.error,
+            "codex_thread_id": turn.thread_id,
+            "codex_turn_id": turn.turn_id,
+        }
 
 
 def main(

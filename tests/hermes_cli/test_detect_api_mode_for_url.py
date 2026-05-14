@@ -66,6 +66,9 @@ class TestAnthropicMessagesDetection:
 
 
 class TestDefaultCase:
+    def test_kimi_coding_returns_none(self):
+        assert _detect_api_mode_for_url("https://api.kimi.com/coding/v1") is None
+
     def test_generic_url_returns_none(self):
         assert _detect_api_mode_for_url("https://api.together.xyz/v1") is None
 

@@ -27,6 +27,8 @@ def _make_compressor():
     compressor.summary_model = None
     compressor.model = "test-model"
     compressor.provider = "test"
+    compressor.summary_preamble = None
+    compressor.summary_template = None
     compressor.base_url = "http://localhost"
     compressor.api_key = "test-key"
     compressor.api_mode = "chat_completions"

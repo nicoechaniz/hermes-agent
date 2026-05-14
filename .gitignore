@@ -70,3 +70,7 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Local project memory and session artifacts (never commit)
+.codex
+hermes_conversation_*.json

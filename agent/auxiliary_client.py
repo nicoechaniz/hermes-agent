@@ -161,6 +161,29 @@ _PROVIDER_ALIASES = {
     "tencentmaas": "tencent-tokenhub",
 }
 
+# Cache for resolve_provider_client to avoid repeated auth resolution.
+#
+# Scope:    process lifetime, no TTL, no automatic eviction.
+# Safety:   credential-distinguishing fields (provider, explicit_api_key,
+#           explicit_base_url, and the sorted-tuple flattening of
+#           main_runtime) are part of the cache key, so a client built
+#           for credentials A is never served for credentials B.
+#
+#           When OAuth-backed credentials are refreshed (see
+#           _refresh_provider_credentials), _evict_cached_clients()
+#           clears BOTH this cache and the lower-level _client_cache for
+#           the affected provider so the next call rebuilds the client
+#           with the fresh access_token. The OpenAI client objects
+#           themselves do not auto-refresh — they snapshot api_key at
+#           construction — which is why eviction is necessary.
+#
+# Limit:    the main_runtime flattening is one level deep. Adding a
+#           nested dict/list value to main_runtime will raise TypeError
+#           at cache key construction. Tests pin this so a regression
+#           surfaces clearly. See tests/agent/test_auxiliary_client_cache.py.
+_resolve_provider_cache: dict[tuple, tuple] = {}
+_resolve_provider_cache_lock = threading.Lock()
+
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
@@ -1409,6 +1432,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
+            _mark_provider_unhealthy("openrouter", ttl=60)
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
@@ -1417,6 +1441,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
+        _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1448,6 +1473,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
                 _remaining,
             )
+            _mark_provider_unhealthy("nous", ttl=_remaining)
             return None, None
     except Exception:
         pass
@@ -1455,6 +1481,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
+        _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     global auxiliary_is_nous
     auxiliary_is_nous = True
@@ -2115,7 +2142,14 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
 
 
 def _evict_cached_clients(provider: str) -> None:
-    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    """Drop cached auxiliary clients for a provider so fresh creds are used.
+
+    Clears entries from BOTH _client_cache (low-level lookup cache) and
+    _resolve_provider_cache (high-level resolver cache). Both caches store
+    OpenAI client objects whose api_key was snapshotted at construction
+    time, so post-refresh both layers must be invalidated for the new
+    access_token to take effect on the next call.
+    """
     normalized = _normalize_aux_provider(provider)
     with _client_cache_lock:
         stale_keys = [
@@ -2133,6 +2167,13 @@ def _evict_cached_clients(provider: str) -> None:
                 except Exception:
                     pass
             _client_cache.pop(key, None)
+    with _resolve_provider_cache_lock:
+        stale_resolve_keys = [
+            key for key in _resolve_provider_cache
+            if _normalize_aux_provider(str(key[0])) == normalized
+        ]
+        for key in stale_resolve_keys:
+            _resolve_provider_cache.pop(key, None)
 
 
 def _evict_cached_client_instance(target: Any) -> bool:
@@ -2707,6 +2748,66 @@ def resolve_provider_client(
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
+    cache_key = (
+        provider, model, async_mode, raw_codex,
+        explicit_base_url, explicit_api_key, api_mode,
+        tuple(sorted((main_runtime or {}).items())) if main_runtime else None,
+    )
+    with _resolve_provider_cache_lock:
+        if cache_key in _resolve_provider_cache:
+            client, resolved_model = _resolve_provider_cache[cache_key]
+            logger.debug("resolve_provider_client: cache hit for %s", provider)
+            return client, resolved_model
+
+    result = _resolve_provider_client_impl(
+        provider, model, async_mode, raw_codex,
+        explicit_base_url, explicit_api_key, api_mode, main_runtime,
+    )
+    with _resolve_provider_cache_lock:
+        _resolve_provider_cache[cache_key] = result
+    return result
+
+
+def _resolve_provider_client_impl(
+    provider: str,
+    model: str = None,
+    async_mode: bool = False,
+    raw_codex: bool = False,
+    explicit_base_url: str = None,
+    explicit_api_key: str = None,
+    api_mode: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Central router: given a provider name and optional model, return a
+    configured client with the correct auth, base URL, and API format.
+
+    The returned client always exposes ``.chat.completions.create()`` — for
+    Codex/Responses API providers, an adapter handles the translation
+    transparently.
+
+    Args:
+        provider: Provider identifier.  One of:
+            "openrouter", "nous", "openai-codex" (or "codex"),
+            "zai", "kimi-coding", "minimax", "minimax-cn",
+            "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
+            "auto" (full auto-detection chain).
+        model: Model slug override.  If None, uses the provider's default
+               auxiliary model.
+        async_mode: If True, return an async-compatible client.
+        raw_codex: If True, return a raw OpenAI client for Codex providers
+            instead of wrapping in CodexAuxiliaryClient.  Use this when
+            the caller needs direct access to responses.stream() (e.g.,
+            the main agent loop).
+        explicit_base_url: Optional direct OpenAI-compatible endpoint.
+        explicit_api_key: Optional API key paired with explicit_base_url.
+        api_mode: API mode override.  One of "chat_completions",
+            "codex_responses", or None (auto-detect).  When set to
+            "codex_responses", the client is wrapped in
+            CodexAuxiliaryClient to route through the Responses API.
+
+    Returns:
+        (client, resolved_model) or (None, None) if auth is unavailable.
+    """
     _validate_proxy_env_urls()
     # Preserve the original provider name before alias normalization so a
     # user-declared ``custom_providers`` entry whose name coincidentally
@@ -3071,7 +3172,7 @@ def resolve_provider_client(
         headers = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             from hermes_cli.auth import kimi_coding_default_headers
-            headers = kimi_coding_default_headers()
+            headers.update(kimi_coding_default_headers())
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.copilot_auth import copilot_request_headers
 
@@ -4448,7 +4549,7 @@ def extract_content_or_reasoning(response) -> str:
       1. ``message.content`` — strip inline think/reasoning blocks, check for
          remaining non-whitespace text.
       2. ``message.reasoning`` / ``message.reasoning_content`` — direct
-         structured reasoning fields (DeepSeek, Moonshot, Novita, etc.).
+         structured reasoning fields (DeepSeek, Moonshot, NovitaAI, etc.).
       3. ``message.reasoning_details`` — OpenRouter unified array format.
 
     Returns the best available text, or ``""`` if nothing found.

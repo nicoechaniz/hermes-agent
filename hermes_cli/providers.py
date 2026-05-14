@@ -156,6 +156,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "novita": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="NOVITA_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -308,6 +313,10 @@ ALIASES: Dict[str, str] = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+
+    # novita
+    "novita-ai": "novita",
+    "novitaai": "novita",
 
     # xiaomi
     "mimo": "xiaomi",
@@ -490,12 +499,9 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     """
     pdef = get_provider(provider)
     if pdef is not None:
-        # Even for known providers, check URL heuristics for special endpoints
-        # (e.g. kimi /coding endpoint needs anthropic_messages even on 'custom')
+        # Even for known providers, check URL heuristics for special endpoints.
         if base_url:
             url_lower = base_url.rstrip("/").lower()
-            if "api.kimi.com/coding" in url_lower:
-                return "anthropic_messages"
             if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
                 return "anthropic_messages"
             if "api.openai.com" in url_lower:
@@ -511,8 +517,6 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
         url_lower = base_url.rstrip("/").lower()
         hostname = base_url_hostname(base_url)
         if url_lower.endswith("/anthropic") or hostname == "api.anthropic.com":
-            return "anthropic_messages"
-        if hostname == "api.kimi.com" and "/coding" in url_lower:
             return "anthropic_messages"
         if hostname == "api.openai.com":
             return "codex_responses"

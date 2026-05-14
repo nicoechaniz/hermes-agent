@@ -52,8 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
-    # Code execution + delegation
-    "execute_code", "delegate_task",
+    # Code execution + delegation + research loop
+    "execute_code", "delegate_task", "run_research",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -107,6 +107,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "video_gen": {
+        "description": (
+            "Video generation tools. Single ``video_generate`` tool covers "
+            "text-to-video (prompt only) and image-to-video (prompt + "
+            "image_url) — the active backend auto-routes. Configure via "
+            "``hermes tools`` → Video Generation."
+        ),
+        "tools": ["video_generate"],
+        "includes": []
+    },
+
     "computer_use": {
         "description": (
             "Background macOS desktop control via cua-driver — screenshots, "
@@ -132,6 +143,12 @@ TOOLSETS = {
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "research": {
+        "description": "Iterative self-improving research loop: run_research spawns worker subagents, scores output against a metric, and applies LLM-guided hypothesis revision across iterations (Karpathy + Autogenesis AOOR loop). research_job is the detached, resumable variant for long-running loops (>5min).",
+        "tools": ["run_research", "research_job"],
         "includes": []
     },
     

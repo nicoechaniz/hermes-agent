@@ -42,6 +42,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
+import copy
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -670,6 +671,60 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _load_profile_config(profile_name: str) -> tuple[dict, Path]:
+    """Load config and .env from a Hermes profile directory.
+
+    Returns (config_dict, profile_dir).  Config is empty dict if the file
+    doesn't exist.  .env vars are injected into os.environ only when the
+    key is not already present (global ~/.hermes/.env takes precedence).
+    """
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+
+    if not profile_exists(profile_name):
+        logger.warning("Profile '%s' does not exist — falling back to global config", profile_name)
+        return {}, Path()
+
+    profile_dir = get_profile_dir(profile_name)
+    config_path = profile_dir / "config.yaml"
+    config: dict = {}
+    if config_path.exists():
+        import yaml
+        try:
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("Failed to load profile config for '%s': %s", profile_name, exc)
+
+    # Load profile .env so credentials (MINIMAX_API_KEY, etc.) are available.
+    env_path = profile_dir / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                # Strip inline comments
+                in_quote = None
+                comment_idx = None
+                for i, ch in enumerate(value):
+                    if ch in ('"', "'"):
+                        if in_quote == ch:
+                            in_quote = None
+                        elif in_quote is None:
+                            in_quote = ch
+                    elif ch == "#" and in_quote is None and i > 0 and value[i - 1] == " ":
+                        comment_idx = i - 1
+                        break
+                if comment_idx is not None:
+                    value = value[:comment_idx].rstrip()
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    return config, profile_dir
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -1137,6 +1192,38 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     if agent_result.get("completed") is False:
         return False
     return True
+
+
+def _preserve_queued_followup_history_offset(
+    current_result: dict,
+    followup_result: dict,
+) -> dict:
+    """Carry the outer history offset through queued follow-up drains.
+
+    ``_process_message_background()`` persists transcript rows only once, after the
+    entire in-band queued-follow-up chain returns.  Each recursive ``_run_agent()``
+    call advances ``history_offset`` to the history it received, so without
+    correction the outermost persistence step sees only the *last* queued turn as
+    "new" and silently drops earlier turns from the same drain chain.
+
+    Preserve the earliest (outermost) history offset so the final transcript slice
+    still includes every queued turn that ran during the chain.
+    """
+    if not isinstance(followup_result, dict):
+        return followup_result
+    if not isinstance(current_result, dict):
+        return followup_result
+
+    current_offset = current_result.get("history_offset")
+    followup_offset = followup_result.get("history_offset")
+    if not isinstance(current_offset, int):
+        return followup_result
+    if isinstance(followup_offset, int) and followup_offset <= current_offset:
+        return followup_result
+
+    merged = dict(followup_result)
+    merged["history_offset"] = current_offset
+    return merged
 
 
 class GatewayRunner:
@@ -1801,6 +1888,29 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
+
+        # If the source carries a Hermes profile, load its config and credentials
+        # so the agent uses the profile's model/provider/system_prompt instead of
+        # the gateway global defaults.
+        profile_config = {}
+        profile_name = getattr(source, "profile", None) if source else None
+        if profile_name:
+            profile_config, _ = _load_profile_config(profile_name)
+            if profile_config:
+                logger.debug(
+                    "Loaded profile '%s' for session %s",
+                    profile_name, resolved_session_key or "",
+                )
+
+        # Merge profile config on top of global user_config for model resolution.
+        # Profile takes precedence for model/providers; global stays for display/tools.
+        merged_config = copy.deepcopy(user_config) if user_config else {}
+        if profile_config:
+            from hermes_cli.config import _deep_merge
+            merged_config = _deep_merge(merged_config, profile_config)
+            # Re-resolve model with profile config in scope
+            model = _resolve_gateway_model(merged_config)
+
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
@@ -1839,10 +1949,96 @@ class GatewayRunner:
                 runtime_model,
             )
             model = runtime_model
+
+        # Profile-scoped config: if the message source carries a profile,
+        # load that profile's config.yaml and .env so the agent uses the
+        # correct model, provider and credentials.
+        _profile = getattr(source, "profile", None) if source else None
+        if _profile:
+            try:
+                _profile_home = Path.home() / ".hermes" / "profiles" / _profile
+                _profile_cfg_path = _profile_home / "config.yaml"
+                if _profile_cfg_path.exists():
+                    import yaml as _yaml
+                    with open(_profile_cfg_path, encoding="utf-8") as _f:
+                        _profile_cfg = _yaml.safe_load(_f) or {}
+                    _profile_model = _profile_cfg.get("model", {})
+                    _profile_default = _profile_model.get("default", model)
+                    _profile_provider = _profile_model.get("provider", runtime_kwargs.get("provider"))
+                    _profile_providers = _profile_cfg.get("providers", {})
+                    _provider_cfg = _profile_providers.get(_profile_provider, {})
+                    _profile_base_url = _provider_cfg.get("base_url", runtime_kwargs.get("base_url"))
+
+                    # Read API key from profile .env
+                    _profile_env_path = _profile_home / ".env"
+                    _profile_api_key = None
+                    if _profile_env_path.exists():
+                        _prov_upper = (_profile_provider or "").upper().replace("-", "_").replace("_OAUTH", "")
+                        _key_name = f"{_prov_upper}_API_KEY"
+                        with open(_profile_env_path, encoding="utf-8") as _ef:
+                            for line in _ef:
+                                if line.startswith(f"{_key_name}="):
+                                    _profile_api_key = line.split("=", 1)[1].strip()
+                                    break
+
+                    model = _profile_default or model
+                    runtime_kwargs = {
+                        "api_key": _profile_api_key or runtime_kwargs.get("api_key"),
+                        "base_url": _profile_base_url or runtime_kwargs.get("base_url"),
+                        "provider": _profile_provider or runtime_kwargs.get("provider"),
+                        "api_mode": runtime_kwargs.get("api_mode"),
+                        "command": runtime_kwargs.get("command"),
+                        "args": list(runtime_kwargs.get("args") or []),
+                        "credential_pool": runtime_kwargs.get("credential_pool"),
+                    }
+                    logger.info("Profile '%s' loaded: model=%s provider=%s", _profile, model, _profile_provider)
+            except Exception as _profile_exc:
+                logger.warning("Failed to load profile '%s' config: %s", _profile, _profile_exc)
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+
+        # When a profile is configured, re-resolve runtime_kwargs so that
+        # profile-level provider credentials (api_key, base_url, etc.) are used.
+        if profile_config and profile_name:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            from hermes_cli.auth import AuthError
+            try:
+                _requested = (profile_config.get("model") or {}).get("provider")
+                if not _requested and isinstance(profile_config.get("providers"), dict):
+                    # Pick the first provider block that has a 'provider' key
+                    for _pname, _pval in profile_config["providers"].items():
+                        if isinstance(_pval, dict) and _pval.get("provider"):
+                            _requested = _pval["provider"]
+                            break
+
+                # Extract explicit credentials from profile config (providers.<name>.api_key / base_url)
+                _provider_cfg = {}
+                if isinstance(profile_config.get("providers"), dict):
+                    if _requested and _requested in profile_config["providers"]:
+                        _provider_cfg = profile_config["providers"][_requested]
+                    else:
+                        # Fallback: use the first provider block
+                        _provider_cfg = next(iter(profile_config["providers"].values()), {})
+
+                profile_runtime = resolve_runtime_provider(
+                    requested=_requested,
+                    explicit_api_key=_provider_cfg.get("api_key"),
+                    explicit_base_url=_provider_cfg.get("base_url"),
+                )
+                if profile_runtime:
+                    runtime_kwargs.update(profile_runtime)
+                    logger.debug(
+                        "Applied runtime from profile '%s': provider=%s base_url=%s",
+                        profile_name,
+                        profile_runtime.get("provider"),
+                        profile_runtime.get("base_url"),
+                    )
+            except AuthError as auth_exc:
+                logger.warning("Profile '%s' auth failed: %s", profile_name, auth_exc)
+            except Exception as exc:
+                logger.debug("Could not resolve runtime for profile '%s': %s", profile_name, exc)
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -6105,6 +6301,12 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
 
+            # /codex-runtime must not be used while the agent is running.
+            # Switching mid-turn would split a turn across two transports.
+            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
+                return ("Agent is running — wait or /stop first, then "
+                        "change runtime.")
+
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.
@@ -6143,6 +6345,12 @@ class GatewayRunner:
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+
+            # /subgoal is safe mid-run — it only modifies the goal's
+            # subgoals list, which the judge reads at the next turn
+            # boundary. No race with the running turn.
+            if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
+                return await self._handle_subgoal_command(event)
 
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
@@ -6439,6 +6647,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "codex-runtime":
+            return await self._handle_codex_runtime_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -6521,6 +6732,9 @@ class GatewayRunner:
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
+
+        if canonical == "subgoal":
+            return await self._handle_subgoal_command(event)
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -9220,6 +9434,51 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
+        """Handle /codex-runtime command in the gateway.
+
+        Same surface as the CLI handler in cli.py:
+            /codex-runtime                  — show current state
+            /codex-runtime auto             — Hermes default runtime
+            /codex-runtime codex_app_server — codex subprocess runtime
+            /codex-runtime on / off         — synonyms
+
+        On change, the cached agent for this session is evicted so the next
+        message creates a fresh AIAgent with the new api_mode wired in
+        (avoids prompt-cache invalidation mid-session)."""
+        from hermes_cli import codex_runtime_switch as crs
+
+        raw_args = event.get_command_args().strip() if event else ""
+        new_value, errors = crs.parse_args(raw_args)
+        if errors:
+            return "❌ " + "\n❌ ".join(errors)
+
+        # Load + persist via the same helpers used for /model and /yolo
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            return f"❌ Could not load config: {exc}"
+        cfg = load_config()
+
+        result = crs.apply(
+            cfg,
+            new_value,
+            persist_callback=(save_config if new_value is not None else None),
+        )
+
+        # On a real change, evict the cached agent so the new runtime takes
+        # effect on the next message rather than waiting for cache TTL.
+        if result.success and new_value is not None and result.requires_new_session:
+            try:
+                session_key = self._session_key_for_source(event.source)
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug("could not evict cached agent after codex-runtime change",
+                             exc_info=True)
+
+        prefix = "✓" if result.success else "✗"
+        return f"{prefix} {result.message}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from hermes_constants import display_hermes_home
@@ -9447,6 +9706,57 @@ class GatewayRunner:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
         return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+
+    async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
+        """Handle /subgoal for gateway platforms (mirror of CLI handler).
+
+        Subgoals are extra criteria appended to the active goal mid-loop.
+        They modify state read at the next turn boundary, so this is safe
+        to invoke while the agent is running.
+        """
+        args = (event.get_command_args() or "").strip()
+        mgr, _session_entry = self._get_goal_manager_for_event(event)
+        if mgr is None:
+            return t("gateway.goal.unavailable")
+        if not mgr.has_goal():
+            return "No active goal. Set one with /goal <text>."
+
+        # No args → list current subgoals.
+        if not args:
+            return f"{mgr.status_line()}\n{mgr.render_subgoals()}"
+
+        tokens = args.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if verb == "remove":
+            if not rest:
+                return "Usage: /subgoal remove <n>"
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                return "/subgoal remove: <n> must be an integer (1-based index)."
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                return f"/subgoal remove: {exc}"
+            return f"✓ Removed subgoal {idx}: {removed}"
+
+        if verb == "clear":
+            try:
+                prev = mgr.clear_subgoals()
+            except RuntimeError as exc:
+                return f"/subgoal clear: {exc}"
+            if prev:
+                return f"✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}."
+            return "No subgoals to clear."
+
+        try:
+            text = mgr.add_subgoal(args)
+        except (ValueError, RuntimeError) as exc:
+            return f"/subgoal: {exc}"
+        idx = len(mgr.state.subgoals) if mgr.state else 0
+        return f"✓ Added subgoal {idx}: {text}"
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
@@ -14747,7 +15057,36 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-            if self._ephemeral_system_prompt:
+
+            # If a Hermes profile is specified for this source, load its system
+            # prompt (from SOUL.md or agent.system_prompt) instead of the global
+            # gateway ephemeral prompt.
+            _profile_name = getattr(source, "profile", None)
+            _profile_system_prompt = ""
+            if _profile_name:
+                _profile_config, _profile_dir = _load_profile_config(_profile_name)
+                # 1. SOUL.md / AGENTS.md in the profile directory
+                if _profile_dir and _profile_dir.exists():
+                    for fname in ("SOUL.md", "AGENTS.md", ".cursorrules"):
+                        fpath = _profile_dir / fname
+                        if fpath.exists():
+                            _profile_system_prompt += "\n\n" + fpath.read_text(encoding="utf-8")
+                # 2. agent.system_prompt from profile config.yaml
+                _cfg_prompt = (_profile_config.get("agent") or {}).get("system_prompt", "")
+                if _cfg_prompt:
+                    _profile_system_prompt += "\n\n" + str(_cfg_prompt)
+                _profile_system_prompt = _profile_system_prompt.strip()
+                if _profile_system_prompt:
+                    logger.debug("Loaded system prompt from profile '%s' (%d chars)", _profile_name, len(_profile_system_prompt))
+
+            if _profile_system_prompt:
+                # Profile overrides the global ephemeral system prompt, but keeps
+                # session context and per-channel context.
+                combined_ephemeral = (context_prompt or "").strip()
+                if event_channel_prompt:
+                    combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _profile_system_prompt).strip()
+            elif self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
@@ -14917,6 +15256,11 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                # If a Hermes profile is active, skip loading global context files
+                # (SOUL.md, AGENTS.md, MEMORY.md) so the profile's system prompt
+                # is the only identity injected.
+                _profile_name = getattr(source, "profile", None)
+                _skip_context = bool(_profile_name)
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -14948,6 +15292,8 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    skip_context_files=_skip_context,
+                    skip_memory=_skip_context,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -16082,7 +16428,7 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                return await self._run_agent(
+                followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
                     history=updated_history,
@@ -16094,6 +16440,7 @@ class GatewayRunner:
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
