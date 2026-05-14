@@ -670,9 +670,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # Idle heartbeat: wake up Steve so he can act autonomously
         # (progress on achievements, scout, etc.) Throttle to avoid token spam.
         now = time.time()
-        if now - self._last_idle_wake_up >= 30:
+        if now - self._last_idle_wake_up >= 90:
             self._last_idle_wake_up = now
-            logger.info("[DaemonCraft] Wake-up reason: idle heartbeat (30s throttle)")
+            logger.info("[DaemonCraft] Wake-up reason: idle heartbeat (90s throttle)")
             return "wake_up"
 
         return "context"
