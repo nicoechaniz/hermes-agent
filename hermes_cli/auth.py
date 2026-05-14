@@ -4461,6 +4461,24 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
+    # Kimi OAuth fallback: when no env API key is set, try CLI OAuth credentials.
+    # This centralizes OAuth resolution so every consumer of this function
+    # (runtime_provider, auxiliary_client, etc.) gets OAuth automatically.
+    if not api_key and provider_id == "kimi-coding":
+        try:
+            oauth = resolve_kimi_coding_runtime_credentials(allow_api_key_fallback=False)
+            oauth_key = str(oauth.get("api_key", "") or "").strip()
+            if oauth_key:
+                api_key = oauth_key
+                key_source = str(oauth.get("source", "") or "").strip() or "kimi-cli-oauth"
+                oauth_url = str(oauth.get("base_url", "") or "").strip()
+                if oauth_url and not env_url:
+                    env_url = oauth_url
+        except Exception:
+            # OAuth not configured or unreadable — fall through to empty credentials
+            # so callers that expect missing keys get them gracefully.
+            pass
+
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
