@@ -1195,15 +1195,6 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
-            # Kimi OAuth fallback: if no env API key, try reading kimi-cli credentials.
-            # This path is hit when the CLI passes an explicit base_url from config.yaml
-            # (for example the old /coding/v1 URL) but no KIMI_API_KEY is set.
-            if provider == "kimi-coding" and not api_key:
-                oauth_creds = _try_kimi_oauth_credentials()
-                if oauth_creds:
-                    api_key = str(oauth_creds.get("api_key", "") or "").strip()
-                    if not base_url:
-                        base_url = str(oauth_creds.get("base_url", "") or "").rstrip("/")
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -1636,15 +1627,6 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        # Kimi Coding is fork-supported through the user's existing Kimi CLI
-        # OAuth session (~/.kimi/credentials/kimi-code.json). If no KIMI_API_KEY
-        # exists, use that OAuth token instead of returning an empty key that the
-        # CLI later replaces with no-key-required (which drops Kimi's required
-        # X-Msh headers and causes 404s).
-        if provider == "kimi-coding" and not str(creds.get("api_key", "") or "").strip():
-            oauth_creds = _try_kimi_oauth_credentials()
-            if oauth_creds:
-                creds = oauth_creds
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
