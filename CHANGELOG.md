@@ -4,6 +4,33 @@ Team-facing summary of changes to our fork. For branch topology and sync command
 
 > Provider note: profile configs reference DeepSeek, Kimi, and MiniMax providers because that is our stack. Team members using different providers should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` or a symlinked shared `.env`.
 
+## 2026-05-14 — Kimi OAuth architecture consolidation
+
+### Centralized resolution
+
+- `resolve_api_key_provider_credentials()` now automatically tries Kimi CLI OAuth (`~/.kimi/credentials/kimi-code.json`) when no `KIMI_API_KEY` env var is present.
+- Removed 33 lines of scattered ad-hoc OAuth fallback code from `runtime_provider.py` (`_try_kimi_oauth_credentials()` and both call sites).
+- All consumers of the canonical resolver (runtime provider, auxiliary client, etc.) get OAuth automatically without manual fallback code.
+
+### Branch sync
+
+- Cherry-picked missing Kimi commits from `main` into `feat/kimi`:
+  - `_try_refresh_kimi_client_credentials()` in `run_agent.py` (mid-conversation 401 refresh)
+  - `kimi_coding_default_headers()` applied consistently across all provider paths
+- `feat/kimi` is now a complete clean patch stack with no Kimi gaps vs `main`.
+- Merged back to `main`, resolved one minor merge conflict in `agent/auxiliary_client.py`.
+
+### Test fixes
+
+- Fixed `test_resolve_kimi_prefers_cli_oauth_without_api_key`: mock now accepts `**kwargs` to match the new `allow_api_key_fallback=False` call signature.
+- Fixed two pre-existing broken tests with mismatched mock values:
+  - `test_resolve_runtime_provider_kimi_uses_oauth_chat_mode`
+  - `test_resolve_runtime_provider_lmstudio_uses_token_when_present`
+
+### Verification
+
+- All 287 provider/auth tests pass: `scripts/run_tests.sh tests/hermes_cli/test_runtime_provider_resolution.py tests/hermes_cli/test_api_key_providers.py -q`
+
 ## 2026-05-13 — Kimi branch consolidation
 
 ### Branch workflow
