@@ -503,7 +503,7 @@ class TestResolveApiKeyProviderCredentials:
     def test_resolve_kimi_prefers_cli_oauth_without_api_key(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.auth.resolve_kimi_coding_runtime_credentials",
-            lambda: {
+            lambda **kw: {
                 "provider": "kimi-coding",
                 "api_key": "oauth-token",
                 "base_url": KIMI_CODE_BASE_URL,

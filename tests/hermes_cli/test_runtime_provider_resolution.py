@@ -256,7 +256,7 @@ def test_resolve_runtime_provider_kimi_uses_oauth_chat_mode(monkeypatch):
         "resolve_api_key_provider_credentials",
         lambda provider: {
             "provider": provider,
-            "api_key": "***",
+            "api_key": "oauth-token",
             "base_url": "https://api.kimi.com/coding/v1",
             "source": "kimi-cli-oauth",
         },
@@ -292,7 +292,7 @@ def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
         "resolve_api_key_provider_credentials",
         lambda provider: {
             "provider": "lmstudio",
-            "api_key": "***",
+            "api_key": "lm-token",
             "base_url": "http://127.0.0.1:1234/v1",
             "source": "LM_API_KEY",
         },
