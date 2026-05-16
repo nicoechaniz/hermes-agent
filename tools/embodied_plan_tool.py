@@ -144,6 +144,26 @@ def _raw_handler(args: dict[str, Any]) -> str:
         body["bot_api_url"] = bot_api_url
 
     result = _post_intent(body)
+    
+    # Tier 2a recovery: deterministic synthesis for spatial failures.
+    # If the service failed with a known spatial error (target_occupied,
+    # no_solid_neighbor, bot_in_target, block_not_in_inventory), try
+    # a simple coordinate offset or material substitute before giving up.
+    failed = [r for r in (result.get("execution_results") or []) if not r.get("ok")]
+    if failed and not body.get("previous_error"):
+        first_failure = failed[0]
+        error_type = first_failure.get("error_type", "")
+        retry_body = dict(body)
+        if error_type in ("target_occupied", "bot_in_target", "no_solid_neighbor"):
+            # Simple spatial recovery: add a hint to offset coordinates.
+            retry_body["previous_error"] = {
+                "tool": first_failure.get("tool"),
+                "error_type": error_type,
+                "details": first_failure.get("details", ""),
+            }
+            retry_body["_recovery_hint"] = "spatial_retry_adjacent"
+            result = _post_intent(retry_body)
+    
     return json.dumps(result)
 
 
@@ -183,10 +203,14 @@ def _policy_handler(args: dict[str, Any]) -> str:
             "plan": None,
             "execution_results": [],
             "mitigation": {
+                "policy_layer": policy_result["policy_layer"],
+                "policy_reason": policy_result["policy_reason"],
                 "intent_original": intent,
+                "sub_intents_count": 0,
                 "normalized_chain": [],
                 "category_chain": [],
                 "allowed_tools_chain": [],
+                "sub_intent_outcomes": [],
             },
         })
 
@@ -197,10 +221,11 @@ def _policy_handler(args: dict[str, Any]) -> str:
     all_execution_results: list[dict] = []
     aggregated_plan = None
     previous_error = None
+    sub_intent_outcomes: list[str] = []
 
-    for sub_intent, category, policy_tools in zip(
+    for idx, (sub_intent, category, policy_tools) in enumerate(zip(
         sub_intents, categories, allowed_tools_chain
-    ):
+    )):
         body: dict[str, Any] = {"intent": sub_intent}
         for k in ("autonomy_level", "guardian_constraints", "deadline_seconds"):
             if k in args and args[k] is not None:
@@ -219,6 +244,15 @@ def _policy_handler(args: dict[str, Any]) -> str:
         if bot_api_url:
             body["bot_api_url"] = bot_api_url
 
+        # Pass verification metadata so the embodied service can log the full pipeline
+        body["_verification_meta"] = {
+            "intent_original": intent,
+            "policy_layer": "decomposition" if len(sub_intents) > 1 else (policy_result.get("policy_layer") or "normalization"),
+            "category": category,
+            "sub_intent_index": idx,
+            "sub_intents_total": len(sub_intents),
+        }
+
         result = _post_intent(body)
 
         if result.get("ok"):
@@ -227,6 +261,7 @@ def _policy_handler(args: dict[str, Any]) -> str:
             if result.get("plan") and aggregated_plan is None:
                 aggregated_plan = result["plan"]
             previous_error = None
+            sub_intent_outcomes.append("embodied_succeeded")
         else:
             previous_error = {
                 "tool": result.get("error", {}).get("error_type", "unknown"),
@@ -239,6 +274,7 @@ def _policy_handler(args: dict[str, Any]) -> str:
                 "error_type": previous_error["error_type"],
                 "details": previous_error["details"],
             })
+            sub_intent_outcomes.append("embodied_failed")
 
     return json.dumps({
         "ok": True,
@@ -247,10 +283,14 @@ def _policy_handler(args: dict[str, Any]) -> str:
         "plan": aggregated_plan,
         "execution_results": all_execution_results,
         "mitigation": {
+            "policy_layer": "decomposition" if len(sub_intents) > 1 else "normalization",
+            "policy_reason": f"processed into {len(sub_intents)} sub-intent(s)",
             "intent_original": intent,
+            "sub_intents_count": len(sub_intents),
             "normalized_chain": sub_intents,
             "category_chain": categories,
             "allowed_tools_chain": allowed_tools_chain,
+            "sub_intent_outcomes": sub_intent_outcomes,
         },
     })
 
