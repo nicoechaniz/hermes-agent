@@ -772,7 +772,18 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{embodied_url}/intent",
-                    json={"intent": intent, "autonomy_level": 1, "deadline_seconds": 15},
+                    json={
+                        "intent": intent,
+                        "autonomy_level": 1,
+                        "deadline_seconds": 15,
+                        "allowed_tools": [
+                            "scan_nearby",
+                            "get_inventory",
+                            "ask_clarification",
+                            "raise_guardian_event",
+                            "report_execution_error",
+                        ],
+                    },
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 200:
