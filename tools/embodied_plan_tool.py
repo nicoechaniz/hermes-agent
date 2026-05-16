@@ -291,6 +291,8 @@ def _policy_handler(args: dict[str, Any]) -> str:
             "category_chain": categories,
             "allowed_tools_chain": allowed_tools_chain,
             "sub_intent_outcomes": sub_intent_outcomes,
+            "strategy": policy_result.get("strategy", "embodied_plan"),
+            "needs_setup": policy_result.get("needs_setup", False),
         },
     })
 
