@@ -755,6 +755,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             logger.debug("[DaemonCraft] No world session, skipping embodied injection")
             return
 
+        embodied_url = os.environ.get("EMBODIED_SERVICE_URL", "http://localhost:7790")
         intent = (
             "Scan the area. Report concisely: your position, the 5 most common "
             "nearby blocks with counts, any entities (players, mobs) with distances, "
@@ -768,29 +769,30 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         exc_info = None
 
         try:
-            from tools.embodied_plan_tool import _handler
-            result_json = await asyncio.to_thread(
-                _handler,
-                {
-                    "intent": intent,
-                    "policy_mode": "auto",
-                    "autonomy_level": 1,
-                    "deadline_seconds": 15,
-                    "allowed_tools": [
-                        "scan_nearby",
-                        "get_inventory",
-                        "ask_clarification",
-                        "raise_guardian_event",
-                        "report_execution_error",
-                    ],
-                },
-            )
-            body = json.loads(result_json)
-            ok = body.get("ok", False)
-            if ok and body.get("execution_results"):
-                payload = json.dumps(body, ensure_ascii=False, default=str)
-            elif body.get("plan", {}).get("body_plan"):
-                payload = json.dumps(body["plan"], ensure_ascii=False, default=str)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{embodied_url}/intent",
+                    json={
+                        "intent": intent,
+                        "autonomy_level": 1,
+                        "deadline_seconds": 15,
+                        "allowed_tools": [
+                            "scan_nearby",
+                            "get_inventory",
+                            "ask_clarification",
+                            "raise_guardian_event",
+                            "report_execution_error",
+                        ],
+                    },
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 200:
+                        body = await resp.json()
+                        ok = body.get("ok", False)
+                        if ok and body.get("execution_results"):
+                            payload = json.dumps(body, ensure_ascii=False, default=str)
+                        elif body.get("plan", {}).get("body_plan"):
+                            payload = json.dumps(body["plan"], ensure_ascii=False, default=str)
         except Exception as exc:
             logger.warning("[DaemonCraft] Embodied world-state query failed: %s", exc)
             exc_info = str(exc)
