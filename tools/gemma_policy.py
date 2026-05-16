@@ -73,6 +73,25 @@ class GemmaPolicy:
     COMMON_SAFE = ["ask_clarification", "report_execution_error"]
     GUARDIAN_AWARE_CATEGORIES = {"navigation", "combat", "default"}
 
+    # ── Strategy map: category → execution method (benchmark-validated 2026-05-16) ─
+    STRATEGY_MAP = {
+        "navigation":      "embodied_plan",
+        "mining":          "embodied_plan",
+        "equip":           "embodied_plan",
+        "toss":            "embodied_plan",
+        "pickup":          "embodied_plan",
+        "inventory_query": "embodied_plan",
+        "memory":          "embodied_plan",
+        "food":            "embodied_plan",
+        "build":           "embodied_plan",
+        "combat":          "embodied_plan",
+        "default":         "embodied_plan",
+    }
+    # Categories that benefit from setup (clear floor, give items) before execution
+    NEEDS_SETUP = {"build"}
+    # When Gemma-Andy fails (timeout, clutter, tool_not_implemented), fall back to:
+    FALLBACK_METHOD = "mc_direct"
+
     # ── L5: Decomposition ─────────────────────────────────────
     DECOMPOSE_CONNECTORS = re.compile(
         r"(\s+después\s+|\s+despues\s+|\s+luego\s+|\s+y después\s+|"
@@ -344,6 +363,8 @@ class GemmaPolicy:
             "sub_intents": normalized_chain,
             "categories": category_chain,
             "allowed_tools": allowed_chain,
+            "strategy": self.STRATEGY_MAP.get(category_chain[0] if category_chain else "default", "embodied_plan"),
+            "needs_setup": any(c in self.NEEDS_SETUP for c in category_chain),
             "execution_results": [],
             "plan": None,
         }
