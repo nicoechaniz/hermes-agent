@@ -2,6 +2,25 @@
 
 > **Provider note:** Profile configs reference DeepSeek, Kimi, and MiniMax providers because that's our stack. Team members using different providers (OpenRouter, Anthropic, Nous, etc.) should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` (or symlink to shared `.env`). The `max_turns` and `reasoning_effort` values are provider-agnostic and should work across backends.
 
+## 2026-05-16 — mc_bit Tool Fix
+
+### Synchronous mc_bit Handler
+
+The `mc_bit` Hermes tool was broken since deploy: `async def _handler(...)` returned
+a coroutine object, which surfaced as `object of type 'coroutine' has no len()` in
+live tool calls. Replaced with a synchronous `httpx.get` wrapper.
+
+**Branch:** `feat/daemoncraft`
+**Commit:** `a16bc0c5b fix(daemoncraft): make mc_bit tool synchronous`
+
+Tests: `scripts/run_tests.sh tests/tools/test_mc_bit_tool.py -q --tb=short` → 3 passed.
+
+### mBit Context in Embodied Service (DaemonCraft side)
+
+See DaemonCraft CHANGELOG for the full mBit context integration. The hermes-agent
+side only needed the mc_bit tool fix above — the world_state injection lives in
+the embodied service composer on the DaemonCraft repo.
+
 ## 2026-05-09 — Multi-Agent Coding Roster + Kanban Hardening
 
 ### New Profiles
