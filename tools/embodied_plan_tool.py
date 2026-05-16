@@ -52,6 +52,210 @@ def _timeout() -> float:
 
 
 # ---------------------------------------------------------------------------
+# Policy integration (optional — graceful degradation if gemma_policy missing)
+# ---------------------------------------------------------------------------
+
+try:
+    from tools.gemma_policy import GemmaPolicy
+
+    _GemmaPolicy = GemmaPolicy
+except Exception as _import_err:  # pragma: no cover
+    logger.debug("gemma_policy not available: %s", _import_err)
+    _GemmaPolicy = None
+
+
+def _policy_mode_default() -> str:
+    """Platform-aware default: 'auto' when DaemonCraft bot context is detected,
+    'raw' for CLI and other platforms (backward compatibility)."""
+    return "auto" if os.environ.get("BOT_API_URL") else "raw"
+
+
+# ---------------------------------------------------------------------------
+# HTTP helper
+# ---------------------------------------------------------------------------
+
+def _post_intent(body: dict[str, Any]) -> dict[str, Any]:
+    """POST *body* to the embodied-service ``/intent`` endpoint and return the
+    parsed JSON response as a Python dict.
+
+    All network and decode errors are caught and returned as
+    ``{"ok": False, "error": {...}}`` so callers never raise."""
+    url = f"{_service_url()}/intent"
+    timeout = _timeout()
+    try:
+        resp = httpx.post(url, json=body, timeout=timeout)
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "error": {
+                "error_type": "embodied_service_timeout",
+                "details": f"timed out after {timeout}s waiting for {url}",
+            },
+        }
+    except httpx.RequestError as exc:
+        return {
+            "ok": False,
+            "error": {
+                "error_type": "embodied_service_unreachable",
+                "details": f"{type(exc).__name__}: {exc}",
+            },
+        }
+    try:
+        return resp.json()
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "error": {
+                "error_type": "embodied_service_bad_response",
+                "details": f"non-JSON body (status {resp.status_code}): {resp.text[:200]}",
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# Raw passthrough handler (debugging escape hatch)
+# ---------------------------------------------------------------------------
+
+def _raw_handler(args: dict[str, Any]) -> str:
+    """Forward the intent verbatim to the embodied service."""
+    intent = args.get("intent", "")
+    if not intent or not isinstance(intent, str):
+        return json.dumps({
+            "ok": False,
+            "error": {
+                "error_type": "missing_intent",
+                "details": "embodied_plan requires a non-empty 'intent' string",
+            },
+        })
+
+    body: dict[str, Any] = {"intent": intent}
+    for k in (
+        "autonomy_level",
+        "allowed_tools",
+        "guardian_constraints",
+        "previous_error",
+        "deadline_seconds",
+    ):
+        if k in args and args[k] is not None:
+            body[k] = args[k]
+
+    bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
+    if bot_api_url:
+        body["bot_api_url"] = bot_api_url
+
+    result = _post_intent(body)
+    return json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# Policy-wrapped handler
+# ---------------------------------------------------------------------------
+
+def _policy_handler(args: dict[str, Any]) -> str:
+    """Run the GemmaPolicy L2→L3→L5→(L1+L4) pipeline before calling the
+    embodied service.  Sub-intents are POSTed sequentially to ``/intent``;
+    ``previous_error`` is threaded between calls."""
+    intent = args.get("intent", "")
+    if not intent or not isinstance(intent, str):
+        return json.dumps({
+            "ok": False,
+            "error": {
+                "error_type": "missing_intent",
+                "details": "embodied_plan requires a non-empty 'intent' string",
+            },
+        })
+
+    if _GemmaPolicy is None:
+        logger.warning("policy_mode=auto but gemma_policy unavailable; falling back to raw")
+        return _raw_handler(args)
+
+    policy = _GemmaPolicy()
+    policy_result = policy.execute(intent)
+
+    # L2 / L3 cut — handled upstream, do NOT call /intent
+    if policy_result["policy_handled"]:
+        return json.dumps({
+            "ok": True,
+            "outcome": "policy_handled_upstream",
+            "policy_handled": True,
+            "policy_layer": policy_result["policy_layer"],
+            "policy_reason": policy_result["policy_reason"],
+            "plan": None,
+            "execution_results": [],
+            "mitigation": {
+                "intent_original": intent,
+                "normalized_chain": [],
+                "category_chain": [],
+                "allowed_tools_chain": [],
+            },
+        })
+
+    sub_intents = policy_result["sub_intents"]
+    categories = policy_result["categories"]
+    allowed_tools_chain = policy_result["allowed_tools"]
+
+    all_execution_results: list[dict] = []
+    aggregated_plan = None
+    previous_error = None
+
+    for sub_intent, category, policy_tools in zip(
+        sub_intents, categories, allowed_tools_chain
+    ):
+        body: dict[str, Any] = {"intent": sub_intent}
+        for k in ("autonomy_level", "guardian_constraints", "deadline_seconds"):
+            if k in args and args[k] is not None:
+                body[k] = args[k]
+
+        # Use caller's allowed_tools if explicitly provided, else policy-narrowed
+        if "allowed_tools" in args and args["allowed_tools"] is not None:
+            body["allowed_tools"] = args["allowed_tools"]
+        else:
+            body["allowed_tools"] = policy_tools
+
+        if previous_error is not None:
+            body["previous_error"] = previous_error
+
+        bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
+        if bot_api_url:
+            body["bot_api_url"] = bot_api_url
+
+        result = _post_intent(body)
+
+        if result.get("ok"):
+            if result.get("execution_results"):
+                all_execution_results.extend(result["execution_results"])
+            if result.get("plan") and aggregated_plan is None:
+                aggregated_plan = result["plan"]
+            previous_error = None
+        else:
+            previous_error = {
+                "tool": result.get("error", {}).get("error_type", "unknown"),
+                "error_type": result.get("error", {}).get("error_type", "other"),
+                "details": result.get("error", {}).get("details", "unknown error"),
+            }
+            all_execution_results.append({
+                "ok": False,
+                "tool": "embodied_plan",
+                "error_type": previous_error["error_type"],
+                "details": previous_error["details"],
+            })
+
+    return json.dumps({
+        "ok": True,
+        "outcome": "embodied_ready",
+        "policy_handled": False,
+        "plan": aggregated_plan,
+        "execution_results": all_execution_results,
+        "mitigation": {
+            "intent_original": intent,
+            "normalized_chain": sub_intents,
+            "category_chain": categories,
+            "allowed_tools_chain": allowed_tools_chain,
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
 # Tool schema
 # ---------------------------------------------------------------------------
 
@@ -93,6 +297,18 @@ EMBODIED_PLAN_SCHEMA = {
                         "from the inventory.' Ambiguous intents are okay — the "
                         "embodied service will respond with an ask_clarification "
                         "tool_call which surfaces a question to ask the user."
+                    ),
+                },
+                "policy_mode": {
+                    "type": "string",
+                    "enum": ["auto", "raw"],
+                    "description": (
+                        "Policy wrapping mode. 'auto' enables the GemmaPolicy "
+                        "layer (scope filter, ambiguity detection, decomposition, "
+                        "normalization, tool narrowing). 'raw' forwards the intent "
+                        "verbatim for debugging. Default is platform-aware: 'auto' "
+                        "when BOT_API_URL is set (DaemonCraft gateway), 'raw' "
+                        "otherwise (CLI backward compatibility)."
                     ),
                 },
                 "autonomy_level": {
@@ -152,79 +368,18 @@ EMBODIED_PLAN_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
-# Handler
+# Main handler
 # ---------------------------------------------------------------------------
 
+def _handler(args: dict[str, Any] | None = None, **_kw: Any) -> str:
+    args = args or {}
+    policy_mode = args.get("policy_mode")
+    if policy_mode is None:
+        policy_mode = _policy_mode_default()
 
-def _handler(args: dict[str, Any], **_kw: Any) -> str:
-    intent = (args or {}).get("intent", "")
-    if not intent or not isinstance(intent, str):
-        return json.dumps({
-            "ok": False,
-            "error": {"error_type": "missing_intent",
-                      "details": "embodied_plan requires a non-empty 'intent' string"},
-        })
-
-    body: dict[str, Any] = {"intent": intent}
-    for k in (
-        "autonomy_level",
-        "allowed_tools",
-        "guardian_constraints",
-        "previous_error",
-        "deadline_seconds",
-    ):
-        if k in args and args[k] is not None:
-            body[k] = args[k]
-
-    # Multi-bot: include bot_api_url so the embodied service dispatches
-    # to the correct bot/server.js instance. Read from the agent's own
-    # environment (each DaemonCraft agent has BOT_API_URL in its systemd
-    # unit pointing to its own Mineflayer bot). Also accept explicit
-    # override from tool args (for future per-call routing).
-    bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
-    if bot_api_url:
-        body["bot_api_url"] = bot_api_url
-
-    url = f"{_service_url()}/intent"
-    timeout = _timeout()
-
-    try:
-        resp = httpx.post(url, json=body, timeout=timeout)
-    except httpx.TimeoutException as exc:
-        logger.warning("embodied_plan timed out after %.1fs: %s", timeout, exc)
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "error_type": "embodied_service_timeout",
-                "details": f"timed out after {timeout}s waiting for {url}",
-            },
-        })
-    except httpx.RequestError as exc:
-        logger.warning("embodied_plan request failed: %s", exc)
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "error_type": "embodied_service_unreachable",
-                "details": f"{type(exc).__name__}: {exc}",
-            },
-        })
-
-    try:
-        result = resp.json()
-    except json.JSONDecodeError as exc:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "error_type": "embodied_service_bad_response",
-                "details": f"non-JSON body (status {resp.status_code}): {resp.text[:200]}",
-            },
-        })
-
-    # Pass the service response through verbatim. Hermes' AIAgent gets
-    # the full {ok, plan, execution_results, ...} envelope so the LLM
-    # can decide whether to retry with previous_error, reword the
-    # request, or surface ask_clarification questions to the user.
-    return json.dumps(result)
+    if policy_mode == "raw":
+        return _raw_handler(args)
+    return _policy_handler(args)
 
 
 def _check_service_available() -> bool:
