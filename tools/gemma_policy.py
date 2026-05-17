@@ -52,10 +52,11 @@ class GemmaPolicy:
         ("pickup",          ["recogé", "recoge", "pickup", "agarrá", "agarra", "levantá", "levanta", "pick up"]),
         ("food",            ["comé", "comer", "comelo", "eat ", "drink", "bebé", "bebe", "morder", "ingerir"]),
         ("memory",          ["acordate", "marcá", "marca ", "recordá", "remember", "volvé a", "return to", "olvidá", "forget"]),
+        ("craft",           ["craft ", "craftear", "crafteá", "craftea", "fabricar", "fabricá", "fabrica", "smelt", "fundir", "fundí", "fundi", "cocinar", "cociná", "cocina", "horno", "furnace", "forja", "forjar", "forge"]),
         ("mining",          ["minar", "mine ", "conseguí", "consegui", "gather", "dig "]),
-        ("build",           ["construí", "construye", "construí ", "pongá", "place ", "build ", "make a "]),
+        ("build",           ["construí", "construye", "construí ", "pongá", "place ", "build ", "make a ", "rellena", "rellená", "fill ", "construir"]),
         ("combat",          ["atacá", "ataca", "attack", "defendé", "defend", "raise_shield"]),
-        ("inventory_query", ["inventario", "inventory", "decime qué tenés", "decime que tenes", "mostrame el inventario", "what do you have", "show inventory"]),
+        ("inventory_query", ["inventario", "decime qué tenés", "decime que tenes", "mostrame el inventario", "what do you have", "show inventory", "list inventory", "list my items"]),
     ]
 
     CATEGORY_TOOLS = {
@@ -67,8 +68,9 @@ class GemmaPolicy:
         "inventory_query": ["get_inventory"],
         "memory":          ["remember_here", "goto_remembered_place", "forget_place", "get_inventory"],
         "food":            ["consume_food", "get_inventory"],
-        "build":           ["scan_nearby", "goto", "place_block", "equip_item", "get_inventory"],
+        "build":           ["scan_nearby", "goto", "place_block", "fill_volume", "ignite", "equip_item", "get_inventory"],
         "combat":          ["scan_nearby", "attack_entity", "flee_from", "raise_shield", "consume_food"],
+        "craft":           ["get_inventory", "view_craftable", "craft_item", "smelt_item", "check_furnace", "take_from_furnace", "equip_item", "place_block", "scan_nearby", "goto"],
     }
     COMMON_SAFE = ["ask_clarification", "report_execution_error"]
     GUARDIAN_AWARE_CATEGORIES = {"navigation", "combat", "default"}
@@ -84,6 +86,7 @@ class GemmaPolicy:
         "memory":          "embodied_plan",
         "food":            "embodied_plan",
         "build":           "embodied_plan",
+        "craft":           "embodied_plan",
         "combat":          "embodied_plan",
         "default":         "embodied_plan",
     }
