@@ -1,4 +1,4 @@
-"""Tests for CycleDetector and _inject_synthetic_perceive hook in daemoncraft.py."""
+"""Tests for CycleDetector and synthetic world-state injection in daemoncraft.py."""
 from __future__ import annotations
 
 import sys
@@ -80,7 +80,7 @@ class TestCycleDetector:
 
 
 # ===========================================================================
-# _inject_synthetic_perceive hook tests
+# synthetic world-state injection tests
 # ===========================================================================
 
 def _make_adapter():
@@ -132,10 +132,10 @@ class TestSyntheticPerceiveHook:
 
         with patch("gateway.platforms.daemoncraft.invoke_hook", fake_invoke_hook, create=True), \
              patch.dict(sys.modules, {"hermes_cli.plugins": types.SimpleNamespace(invoke_hook=fake_invoke_hook)}):
-            # Patch the local import inside _inject_synthetic_perceive
+            # Patch the local import inside the synthetic injection path
             import importlib
             import gateway.platforms.daemoncraft as dc_mod
-            with patch.object(dc_mod, "_inject_synthetic_perceive_hook_module", None, create=True):
+            with patch.object(dc_mod, "_inject_synthetic_world_state_hook_module", None, create=True):
                 # We patch the from-import by monkeypatching the module namespace
                 pass
 
@@ -145,7 +145,7 @@ class TestSyntheticPerceiveHook:
             sys.modules["hermes_cli.plugins"] = fake_plugins
             sys.modules.setdefault("hermes_cli", types.ModuleType("hermes_cli"))
 
-            await adapter._inject_synthetic_perceive({"x": 1})
+            await adapter._inject_synthetic_world_state({"x": 1})
 
         # assistant append should come first, then hook, then tool append
         assert ("append", "assistant") in call_order
@@ -155,7 +155,7 @@ class TestSyntheticPerceiveHook:
 
     @pytest.mark.anyio
     async def test_hook_receives_mc_perceive_tool_name(self):
-        """invoke_hook must be called with tool_name='mc_perceive'."""
+        """Downstream consumers still see mc_perceive-shaped synthetic results."""
         adapter = _make_adapter()
         _wire_adapter(adapter)
 
@@ -170,7 +170,7 @@ class TestSyntheticPerceiveHook:
         sys.modules["hermes_cli.plugins"] = fake_plugins
         sys.modules.setdefault("hermes_cli", types.ModuleType("hermes_cli"))
 
-        await adapter._inject_synthetic_perceive({"obs": "block"})
+        await adapter._inject_synthetic_world_state({"obs": "block"})
 
         assert received_kwargs.get("event") == "transform_tool_result"
         assert received_kwargs.get("tool_name") == "mc_perceive"
@@ -189,7 +189,7 @@ class TestSyntheticPerceiveHook:
         sys.modules["hermes_cli.plugins"] = fake_plugins
         sys.modules.setdefault("hermes_cli", types.ModuleType("hermes_cli"))
 
-        await adapter._inject_synthetic_perceive({"obs": "fire"})
+        await adapter._inject_synthetic_world_state({"obs": "fire"})
 
         # Both assistant_msg and tool_msg must have been appended
         assert store.append_to_transcript.call_count == 2
