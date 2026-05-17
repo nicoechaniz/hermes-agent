@@ -175,7 +175,18 @@ TOOLSETS = {
         "tools": ["send_message"],
         "includes": []
     },
-    
+
+    "embodiment": {
+        "description": (
+            "DaemonCraft body orchestration — exposes the single canonical tool "
+            "`embodied_plan` that delegates Minecraft body actions to Gemma-Andy "
+            "via the embodied service (Path B). Replaces the legacy granular "
+            "mc_* toolset."
+        ),
+        "tools": ["embodied_plan"],
+        "includes": []
+    },
+
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
         "tools": [

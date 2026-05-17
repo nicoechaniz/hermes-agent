@@ -73,6 +73,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("minecraft",       "⛏️  Minecraft",                 "perceive, navigate, build, craft, combat, manage, screenshot, command, story"),
+    ("embodiment",      "🤖 DaemonCraft Embodied",       "embodied_plan — single body tool dispatched to Gemma-Andy"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
