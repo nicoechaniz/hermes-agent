@@ -451,9 +451,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
     async def _handle_heartbeat_context(self, data: dict) -> None:
         """Process heartbeat_context with two-level event architecture.
 
-        - Context-only updates: inject synthetic mc_perceive tool result silently
-          into the session_store. No LLM turn is forced.
-        - Wake-up events: inject synthetic tool result + force an agent turn with
+        - Context-only updates: inject synthetic world-state into the session_store
+          silently. This is an adapter-internal observation artifact, not a normal
+          agent tool call, so it is exempt from any external authority/lease gate.
+        - Wake-up events: inject synthetic world-state + force an agent turn with
           tool_choice="required". The agent MUST react with a tool call (or mc_no_op).
         - Active plans: every heartbeat while a plan is active forces a wake_up so
           the agent evaluates progress against the plan.
@@ -466,7 +467,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         if gc_reason:
             logger.info("[DaemonCraft] Plan GC: %s", gc_reason)
             # Inject cancellation as a system event
-            await self._inject_synthetic_perceive({
+            await self._inject_synthetic_world_state({
                 "type": "plan_cancelled",
                 "reason": gc_reason,
                 "timestamp": int(time.time() * 1000),
@@ -677,8 +678,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         return "context"
 
-    async def _inject_synthetic_perceive(self, data: dict) -> None:
-        """Inject a fake assistant tool_call + tool result into the world session."""
+    async def _inject_synthetic_world_state(self, data: dict) -> None:
+        """Inject a fake assistant tool_call + tool result into the world session.
+
+        The transcript shape still uses `mc_perceive` so downstream consumers can
+        reuse their existing parsing path, but the gateway treats this as an
+        internal observation event, not an actionable tool execution.
+        """
         if not self._session_store:
             logger.debug("[DaemonCraft] No session_store available, skipping synthetic injection")
             return
@@ -737,7 +743,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             logger.debug("[DaemonCraft] transform_tool_result hook error: %s", _hook_exc)
 
         self._session_store.append_to_transcript(session_id, tool_msg)
-        logger.info("[DaemonCraft] Synthetic mc_perceive injected into session %s", session_id)
+        logger.info("[DaemonCraft] Synthetic world state injected into session %s", session_id)
 
     async def _inject_embodied_world_state(self, data: dict) -> None:
         """Query the body (Gemma-Andy via embodied service) for world state.
