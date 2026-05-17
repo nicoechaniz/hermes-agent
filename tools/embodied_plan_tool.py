@@ -263,14 +263,42 @@ def _policy_handler(args: dict[str, Any]) -> str:
             previous_error = None
             sub_intent_outcomes.append("embodied_succeeded")
         else:
+            # Top-level ok=false. The shape can be one of:
+            #   (a) transport failure (timeout/unreachable/bad JSON) — has
+            #       `error: {error_type, details}` populated by _post_intent.
+            #   (b) embodied-service signaling a structured failure with a
+            #       synthesized mitigation — has `error` AND populated
+            #       `execution_results[*]` with the actual diagnostic.
+            #   (c) legacy paths from embodied-service that returned ok=false
+            #       without the `error` key (now patched in index.js, but old
+            #       deployments may still emit it) — only `execution_results`
+            #       has the diagnostic.
+            # Prefer `error` when present, fall through to the last failed
+            # execution_result when not. Never emit "unknown error" if we
+            # have any signal we can surface upstream — that string blinds
+            # the captain's SOUL pattern-matching catalog.
+            err = result.get("error") or {}
+            last_exec = {}
+            for entry in reversed(result.get("execution_results") or []):
+                if isinstance(entry, dict) and not entry.get("ok", True):
+                    last_exec = entry
+                    break
             previous_error = {
-                "tool": result.get("error", {}).get("error_type", "unknown"),
-                "error_type": result.get("error", {}).get("error_type", "other"),
-                "details": result.get("error", {}).get("details", "unknown error"),
+                "tool": last_exec.get("tool") or "embodied_plan",
+                "error_type": (
+                    err.get("error_type")
+                    or last_exec.get("error_type")
+                    or "embodied_service_failure"
+                ),
+                "details": (
+                    err.get("details")
+                    or last_exec.get("details")
+                    or "embodied service signaled failure without diagnostic details"
+                ),
             }
             all_execution_results.append({
                 "ok": False,
-                "tool": "embodied_plan",
+                "tool": previous_error["tool"],
                 "error_type": previous_error["error_type"],
                 "details": previous_error["details"],
             })
