@@ -318,3 +318,84 @@ def test_policy_threads_previous_error(monkeypatch):
     assert len(payload["execution_results"]) == 2
     assert payload["execution_results"][0]["ok"] is False
     assert payload["execution_results"][1]["ok"] is True
+
+
+def test_policy_failure_fallback_reads_execution_results_when_error_key_missing(monkeypatch):
+    """When embodied service returns ok=false WITHOUT a top-level `error` key
+    (legacy path from agents/embodied-service/index.js — empty-model-response
+    mitigation), the policy handler's failure fallback must read the last
+    failed execution_result so the captain sees real `tool`, `error_type`,
+    and `details` instead of the bogus ``"unknown error"`` defaults that
+    blind the SOUL pattern-matching catalog.
+    """
+    monkeypatch.setenv("BOT_API_URL", "http://bot:3000")
+    from tools.embodied_plan_tool import _handler
+
+    def fake_post(url, json=None, timeout=None):
+        resp = MagicMock()
+        # Shape replicates the live trace observed in session 074553_ee976112:
+        # ok=false at top level, no `error` key, but `execution_results[*]`
+        # carries the diagnostic via the synthesized mitigation path.
+        resp.json.return_value = {
+            "ok": False,
+            "outcome": "embodied_ready",
+            "plan": None,
+            "execution_results": [{
+                "ok": False,
+                "tool": "place_block",
+                "error_type": "target_occupied",
+                "details": "Can't place crafting_table at 0, 70, 1: target space is occupied by prismarine.",
+            }],
+            "mitigation": {"policy_layer": "normalization"},
+        }
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        out = _handler({
+            "intent": "Place a crafting_table 1 block in front of me",
+            "policy_mode": "auto",
+        })
+
+    payload = json.loads(out)
+    # The policy handler wraps execution into a tool-level success envelope
+    # so the captain receives the structured failure inside execution_results.
+    assert payload["ok"] is True
+    assert len(payload["execution_results"]) >= 1
+    failed = payload["execution_results"][-1]
+    assert failed["ok"] is False
+    # The pre-fix fallback emitted:
+    #   tool="embodied_plan", error_type="other", details="unknown error"
+    # Verify the real signals propagate instead.
+    assert failed["tool"] == "place_block"
+    assert failed["error_type"] == "target_occupied"
+    assert "target space is occupied" in failed["details"]
+    assert failed["details"] != "unknown error"
+
+
+def test_policy_failure_fallback_with_no_signal_at_all(monkeypatch):
+    """If the embodied service returns ok=false AND lacks both `error` and
+    populated `execution_results`, the policy handler surfaces a structured
+    marker rather than the legacy ``"unknown error"`` so upstream still
+    has a distinct error_type to key on."""
+    monkeypatch.setenv("BOT_API_URL", "http://bot:3000")
+    from tools.embodied_plan_tool import _handler
+
+    def fake_post(url, json=None, timeout=None):
+        resp = MagicMock()
+        resp.json.return_value = {"ok": False}  # Maximally information-free
+        resp.status_code = 200
+        return resp
+
+    with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
+        # Use a concrete intent so GemmaPolicy doesn't filter it out as ambiguous.
+        out = _handler({
+            "intent": "Mine 3 oak_log",
+            "policy_mode": "auto",
+        })
+
+    payload = json.loads(out)
+    failed = payload["execution_results"][-1]
+    assert failed["ok"] is False
+    assert failed["error_type"] == "embodied_service_failure"
+    assert "without diagnostic" in failed["details"].lower()
