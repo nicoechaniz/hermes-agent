@@ -102,6 +102,7 @@ export interface UiState {
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
+  historyNavRequiresEmptyInput: boolean
   info: null | SessionInfo
   inlineDiffs: boolean
   mouseTracking: boolean

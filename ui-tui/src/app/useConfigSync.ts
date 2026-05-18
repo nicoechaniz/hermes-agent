@@ -123,6 +123,7 @@ export const applyDisplay = (
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
 ) => {
   const d = cfg?.config?.display ?? {}
+  const t = cfg?.config?.tui ?? {}
 
   setBell(!!d.bell_on_complete)
   // Only push the voice record key when the RPC actually returned a
@@ -139,6 +140,7 @@ export const applyDisplay = (
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
+    historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
