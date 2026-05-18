@@ -4355,6 +4355,23 @@ def validate_requested_model(
             api_key=api_key,
         ) or requested
 
+    # Kimi OAuth — no /models endpoint, validate against curated catalog.
+    if normalized in {"kimi-coding", "kimi-coding-cn", "kimi-for-coding", "kimi"}:
+        if not requested:
+            return {"accepted": False, "persist": False, "recognized": False, "message": "Model name cannot be empty."}
+        try:
+            catalog_models = provider_model_ids("kimi-coding")  # always use Hermes slug
+        except Exception:
+            catalog_models = []
+        if requested_for_lookup in set(catalog_models):
+            return {"accepted": True, "persist": True, "recognized": True, "message": None}
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": f"Note: Kimi does not expose a /models endpoint. Accepted `{requested}` without API verification.",
+        }
+
     if not requested:
         return {
             "accepted": False,
