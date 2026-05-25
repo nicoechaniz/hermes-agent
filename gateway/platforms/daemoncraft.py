@@ -157,6 +157,26 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             chat_id.startswith(w + ":") for w in self._world_names
         )
 
+    async def _has_active_user_session(self) -> bool:
+        """Check if there's an active user controlling the bot.
+        
+        Reads the Controller Lease from the bot server. The lease is claimed
+        by CLI sessions, Telegram users, etc. When a human lease is active,
+        we skip autonomous agent turns — single controller of the body.
+        """
+        try:
+            async with self._session.get(
+                f"{self._bot_api_url}/controller/lease", timeout=aiohttp.ClientTimeout(total=3)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    lease = data.get("data") if data.get("ok") else None
+                    if lease and lease.get("owner", "").startswith("human:"):
+                        return True
+        except Exception:
+            pass
+        return False
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
@@ -503,21 +523,77 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             logger.debug("[DaemonCraft] Context-only heartbeat injected silently")
             return
 
+        # Skip wake_up if there's an active user session — single controller
+        if await self._has_active_user_session():
+            logger.info("[DaemonCraft] Skipping wake_up: active user session detected")
+            return
+
         # Cycle guard — skip wake-up if loop is repeating embodied_plan calls
         if await self._check_cycle("embodied_plan", {}):
             return
 
         # Wake-up event: force an agent turn with tool_choice=required
         plan_goal = self._plan_goal
-        if plan_goal and event_type == "wake_up":
-            prompt_text = (
-                f"[System: Evaluate progress on plan '{plan_goal}'. "
-                f"Current tasks: {len(self._plan_tasks_snapshot)}. "
-                f"Use mc_plan(action='get_plan') to review, mc_plan(action='update_task') to mark progress, "
-                f"or other tools to advance the active task.]"
-            )
+        body = data.get("body_session") or {}
+
+        # Build enriched prompt from body_session
+        prompt_parts = []
+
+        # Header: trigger + classification
+        reason = body.get("heartbeat_reason", "unknown")
+        if reason and reason != "idle":
+            prompt_parts.append(f"[System: Body heartbeat — WAKE UP. Trigger: {reason}.")
         else:
-            prompt_text = "[System: React to the perceptual update above using available tools.]"
+            prompt_parts.append("[System: Body heartbeat — IDLE wake up.")
+
+        # Body status line
+        pos = body.get("position", {})
+        pos_str = f"({pos.get('x', '?')}, {pos.get('y', '?')}, {pos.get('z', '?')})" if pos else "unknown"
+        health = body.get("health", "?")
+        food = body.get("food", "?")
+        holding_raw = body.get("holding")
+        if isinstance(holding_raw, dict):
+            holding = holding_raw.get("name", "empty")
+        else:
+            holding = holding_raw or "empty"
+        on_ground = body.get("on_ground", True)
+        prompt_parts.append(f" Body: {pos_str}, health {health}, food {food}, holding {holding}, {'on_ground' if on_ground else 'AIRBORNE'}.")
+
+        # Runner state
+        runner = body.get("runner_reflex", "IDLE")
+        prompt_parts.append(f" Runner: {runner}.")
+
+        # Nearby hostiles
+        hostiles = body.get("nearby_hostiles") or []
+        if hostiles:
+            h_strs = []
+            for h in hostiles:
+                hp = h.get("position", {})
+                h_strs.append(f"{h.get('type', '?')} at ({hp.get('x', '?')}, {hp.get('y', '?')}, {hp.get('z', '?')}), {h.get('distance', '?')}m")
+            prompt_parts.append(f" Hostiles nearby: {'; '.join(h_strs)}.")
+
+        # Action history (oldest -> newest)
+        actions = body.get("action_history") or []
+        if actions:
+            a_strs = [f"{a.get('action', '?')}({a.get('status', '?')}, {a.get('secondsAgo', '?')}s ago)" for a in actions]
+            prompt_parts.append(f" Recent actions: {' -> '.join(a_strs)}.")
+
+        # Active task
+        task_mode = body.get("mode", "idle")
+        last_action = body.get("last_action")
+        if last_action and task_mode not in ("idle", None):
+            prompt_parts.append(f" Active task: {last_action} ({task_mode}).")
+        else:
+            prompt_parts.append(" Active task: none.")
+
+        # Plan context
+        if plan_goal:
+            prompt_parts.append(f" Plan: '{plan_goal}' — {len(self._plan_tasks_snapshot)} tasks.")
+            prompt_parts.append(" Evaluate progress based on the provided wake up event data. Continue, adjust, or wait.]")
+        else:
+            prompt_parts.append(" Decide based on the provided wake up event data. Continue autonomous objectives or wait.]")
+
+        prompt_text = "".join(prompt_parts)
 
         source = self.build_source(
             chat_id=self._group_chat_id(),
@@ -907,6 +983,11 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
         source.profile = self._profile
+
+        # Skip agent turn if user is actively controlling from another session
+        if await self._has_active_user_session():
+            logger.info("[DaemonCraft] Skipping chat turn: active user session detected")
+            return
 
         event = MessageEvent(
             text=text,

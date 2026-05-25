@@ -17564,7 +17564,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
-                    turn_timeout_seconds=turn_timeout_seconds,
+
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
@@ -18007,9 +18007,7 @@ class GatewayRunner:
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
-                _tool_choice = getattr(event, "tool_choice", None)
-                if _tool_choice is not None:
-                    _conversation_kwargs["tool_choice"] = _tool_choice
+
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
