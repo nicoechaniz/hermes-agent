@@ -172,22 +172,20 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[DaemonCraft] Failed to write event to queue: %s", e)
 
-    async def _has_active_user_session(self) -> bool:
-        """Check if there's an active user controlling the bot.
+    async def _is_lab_mode(self) -> bool:
+        """Check if the bot is in lab mode (explicit, not automagic).
         
-        Reads the Controller Lease from the bot server. The lease is claimed
-        by CLI sessions, Telegram users, etc. When a human lease is active,
-        we skip autonomous agent turns — single controller of the body.
+        In lab mode, the gateway never spawns agent turns. All events
+        (chat, heartbeats) only add context to the stream file.
         """
         try:
             async with self._session.get(
-                f"{self._bot_api_url}/controller/lease", timeout=aiohttp.ClientTimeout(total=3)
+                f"{self._bot_api_url}/controller/mode", timeout=aiohttp.ClientTimeout(total=3)
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    lease = data.get("data") if data.get("ok") else None
-                    if lease and lease.get("owner", "").startswith("human:"):
-                        return True
+                    mode_data = data.get("data") if data.get("ok") else {}
+                    return mode_data.get("mode") == "lab"
         except Exception:
             pass
         return False
@@ -539,7 +537,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             return
 
         # Skip wake_up if there's an active user session — single controller
-        if await self._has_active_user_session():
+        if await self._is_lab_mode():
             logger.info("[DaemonCraft] Skipping wake_up: active user session detected")
             return
 
@@ -1000,7 +998,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         source.profile = self._profile
 
         # Skip agent turn — write chat to event queue (bridge to CLI via agent_loop)
-        if await self._has_active_user_session():
+        if await self._is_lab_mode():
             logger.info("[DaemonCraft] Chat from %s queued to event bridge", from_)
             self._write_event_to_queue({
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
