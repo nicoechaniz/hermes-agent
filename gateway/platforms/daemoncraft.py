@@ -157,6 +157,21 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             chat_id.startswith(w + ":") for w in self._world_names
         )
 
+
+    def _write_event_to_queue(self, event: dict) -> None:
+        """Write an event to the daemoncraft-events.jsonl bridge file.
+        
+        The agent_loop reads this file each tick and includes events in the
+        context stream, which the CLI can observe.
+        """
+        try:
+            queue_path = Path.home() / ".hermes" / "sessions" / "compaii-events.jsonl"
+            queue_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(queue_path, "a") as f:
+                f.write(json.dumps(event) + "\n")
+        except Exception as e:
+            logger.warning("[DaemonCraft] Failed to write event to queue: %s", e)
+
     async def _has_active_user_session(self) -> bool:
         """Check if there's an active user controlling the bot.
         
@@ -984,9 +999,16 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         )
         source.profile = self._profile
 
-        # Skip agent turn if user is actively controlling from another session
+        # Skip agent turn — write chat to event queue (bridge to CLI via agent_loop)
         if await self._has_active_user_session():
-            logger.info("[DaemonCraft] Skipping chat turn: active user session detected")
+            logger.info("[DaemonCraft] Chat from %s queued to event bridge", from_)
+            self._write_event_to_queue({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "src": "gateway",
+                "event": "chat",
+                "player": from_,
+                "text": text,
+            })
             return
 
         event = MessageEvent(
