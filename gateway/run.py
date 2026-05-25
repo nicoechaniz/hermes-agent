@@ -21307,7 +21307,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     **turn_route["runtime"],
                     **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
-                    turn_timeout_seconds=turn_timeout_seconds,
+
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
