@@ -1681,6 +1681,45 @@ registry.register(
     check_fn=check_minecraft_available,
 )
 
+# ═══════════════════════════════════════════════════════════════════
+# mc_interoception — Body-internal state (health, hunger, runner activity)
+# ═══════════════════════════════════════════════════════════════════
+
+MC_INTEROCEPTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "detail": {
+            "type": "boolean",
+            "description": "If true, return full reflex history (capped at 10). Default: summary view (last 3 with timestamps + aggregated count of older).",
+        },
+    },
+}
+
+def _handle_mc_interoception(args: dict, **kwargs) -> str:
+    """Query body-internal state: health, food, holding, position, runner activity.
+
+    Returns a delta of what the body (L2 runner) has been doing since the last
+    query. Each call updates the `since` timestamp — the next call only returns
+    new activity.
+
+    Args:
+        detail: If True, return full reflex history. Default: summary.
+    """
+    detail = args.get("detail", False)
+    params = f"?detail={'true' if detail else 'false'}"
+    resp = _api_get(f"/interoception{params}")
+    if not resp.get("ok", True):
+        return f"Error: {resp.get('error', 'interoception unavailable')}"
+    return json.dumps(resp.get("data", {}), indent=2)
+
+registry.register(
+    name="mc_interoception",
+    toolset="minecraft",
+    schema=MC_INTEROCEPTION_SCHEMA,
+    handler=lambda args, **kw: _handle_mc_interoception(args, **kw),
+    check_fn=check_minecraft_available,
+)
+
 registry.register(
     name="mc_no_op",
     toolset="minecraft",
