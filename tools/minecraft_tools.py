@@ -1573,42 +1573,36 @@ registry.register(
     toolset="minecraft",
     schema=MC_PERCEIVE_SCHEMA,
     handler=lambda args, **kw: _handle_mc_perceive(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_move",
     toolset="minecraft",
     schema=MC_MOVE_SCHEMA,
     handler=lambda args, **kw: _handle_mc_move(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_mine",
     toolset="minecraft",
     schema=MC_MINE_SCHEMA,
     handler=lambda args, **kw: _handle_mc_mine(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_build",
     toolset="minecraft",
     schema=MC_BUILD_SCHEMA,
     handler=lambda args, **kw: _handle_mc_build(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_craft",
     toolset="minecraft",
     schema=MC_CRAFT_SCHEMA,
     handler=lambda args, **kw: _handle_mc_craft(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_combat",
     toolset="minecraft",
     schema=MC_COMBAT_SCHEMA,
     handler=lambda args, **kw: _handle_mc_combat(args, **kw),
-    check_fn=check_minecraft_available,
 )
 # ── Environment flag: loop mode suppresses mc_chat registration ──
 # The gateway (social layer) needs mc_chat. The loop (body layer) does not.
@@ -1618,7 +1612,6 @@ if not os.getenv("DC_LOOP_MODE"):
         toolset="minecraft",
         schema=MC_CHAT_SCHEMA,
         handler=lambda args, **kw: _handle_mc_chat(args, **kw),
-        check_fn=check_minecraft_available,
     )
 else:
     print("[minecraft_tools] DC_LOOP_MODE=1 — mc_chat tool suppressed for body-only mode", flush=True)
@@ -1627,28 +1620,24 @@ registry.register(
     toolset="minecraft",
     schema=MC_MANAGE_SCHEMA,
     handler=lambda args, **kw: _handle_mc_manage(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_plan",
     toolset="minecraft",
     schema=MC_PLAN_SCHEMA,
     handler=lambda args, **kw: _handle_mc_plan(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_screenshot",
     toolset="minecraft",
     schema=MC_SCREENSHOT_SCHEMA,
     handler=lambda args, **kw: _handle_mc_screenshot(args, **kw),
-    check_fn=check_minecraft_available,
 )
 registry.register(
     name="mc_command",
     toolset="minecraft",
     schema=MC_COMMAND_SCHEMA,
     handler=lambda args, **kw: _handle_mc_command(args, **kw),
-    check_fn=check_minecraft_available,
 )
 MC_NOOP_SCHEMA = {
     "type": "object",
@@ -1670,7 +1659,6 @@ registry.register(
     toolset="minecraft",
     schema=MC_STORY_SCHEMA,
     handler=lambda args, **kw: _handle_mc_story(args, **kw),
-    check_fn=check_minecraft_available,
 )
 
 registry.register(
@@ -1678,7 +1666,6 @@ registry.register(
     toolset="minecraft",
     schema=MC_REGISTRY_SCHEMA,
     handler=lambda args, **kw: _handle_mc_registry(args, **kw),
-    check_fn=check_minecraft_available,
 )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1717,7 +1704,6 @@ registry.register(
     toolset="minecraft",
     schema=MC_INTEROCEPTION_SCHEMA,
     handler=lambda args, **kw: _handle_mc_interoception(args, **kw),
-    check_fn=check_minecraft_available,
 )
 
 registry.register(
@@ -1725,5 +1711,4 @@ registry.register(
     toolset="minecraft",
     schema=MC_NOOP_SCHEMA,
     handler=lambda args, **kw: _handle_mc_noop(args, **kw),
-    check_fn=check_minecraft_available,
 )
