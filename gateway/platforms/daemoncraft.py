@@ -116,6 +116,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._bot_api_url: str = (config.extra or {}).get("bot_api_url", "")
         self._bot_username: str = (config.extra or {}).get("bot_username", "")
         self._profile: str = (config.extra or {}).get("profile", "")
+        # Profile used for autonomous wake-up events (heartbeats, idle, damage, etc.)
+        # Routes wake turns through a lightweight embodied agent (e.g. "steve") while
+        # chat messages continue using _profile (default gateway profile).
+        self._wake_profile: str = (config.extra or {}).get("wake_profile", "steve")
         self._allowed_users: Set[str] = set()
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws_task: Optional[asyncio.Task] = None
@@ -514,10 +518,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                 user_name="System",
                 thread_id="world",
             )
-            source.profile = self._profile
+            source.profile = self._wake_profile  # Route plan-GC wake through configured profile
             event = MessageEvent(
                 text=f"[System: {gc_reason} — set a new plan or continue with immediate actions.]",
-                message_type=MessageType.TEXT,
                 source=source,
                 raw_message={"gc_reason": gc_reason},
                 internal=True,
@@ -604,7 +607,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             prompt_parts.append(f" Plan: '{plan_goal}' — {len(self._plan_tasks_snapshot)} tasks.")
             prompt_parts.append(" Evaluate progress based on the provided wake up event data. Continue, adjust, or wait.]")
         else:
-            prompt_parts.append(" Decide based on the provided wake up event data. Continue autonomous objectives or wait.]")
+            prompt_parts.append(" No active plan. START following your autonomous curriculum immediately. Take ONE concrete action now: gather, craft, build, or explore. Do not wait.]")
 
         prompt_text = "".join(prompt_parts)
 
@@ -616,7 +619,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             user_name="System",
             thread_id="world",
         )
-        source.profile = self._profile
+        source.profile = self._wake_profile  # Route autonomous wake-ups through Steve (or configured wake_profile)
 
         event = MessageEvent(
             text=prompt_text,
