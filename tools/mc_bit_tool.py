@@ -99,9 +99,9 @@ registry.register(
             "description": (
                 "Perceive a 3D chunk of the Minecraft world as text using mBit format. "
                 "Returns a spatial text representation of blocks in the given volume. "
-                "Use this INSTEAD of mc_perceive(type='nearby') when you need spatial "
-                "awareness — to understand terrain, find paths, avoid holes, plan builds, "
-                "or verify the bot's surroundings before acting.\n\n"
+                "Use this ONLY when you need a raw block grid (spatial awareness over a volume) — "
+                "to understand terrain layout, plan builds, or verify exact block placement before/after acting. "
+                "For bot state, inventory, nearby entities, chat, or quick status checks, use mc_perceive instead.\n\n"
                 "Formats:\n"
                 "- binary: walkable (0) / solid (1) map (best for navigation)\n"
                 "- columns: terrain profile per column\n"
