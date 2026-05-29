@@ -1965,3 +1965,113 @@ registry.register(
     schema=MC_PLAN_DECOMPOSE_SCHEMA,
     handler=lambda args, **kw: _handle_mc_plan_decompose(args, **kw),
 )
+
+# ═══════════════════════════════════════════════════════════════════
+# mc_start_quantified_intent — Hermes starts tracking a quantified intent
+# ═══════════════════════════════════════════════════════════════════
+
+MC_START_QUANTIFIED_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent_type": {
+            "type": "string",
+            "description": "Intent type: 'mine', 'gather', 'collect', etc.",
+        },
+        "target_count": {
+            "type": "integer",
+            "description": "How many to mine/gather (e.g. 64).",
+        },
+        "verify_spec": {
+            "type": "object",
+            "description": "Optional verify spec. If omitted, executor uses best-effort tracking.",
+            "properties": {
+                "type": {"type": "string", "description": "VerifyType: INVENTORY_HAS, etc."},
+                "item": {"type": "string"},
+                "count": {"type": "integer"},
+            },
+        },
+    },
+    "required": ["intent_type", "target_count"],
+}
+
+
+def _handle_mc_start_quantified_intent(args: dict, **kwargs) -> str:
+    """Start tracking a quantified intent via the bot server's shared state.
+
+    Writes to executor_intent.json, which agent_loop.py polls on heartbeat ticks.
+    The QuantifiedIntentExecutor snapshots inventory baseline and tracks progress
+    across L2 reflex preemption.
+
+    Args:
+        intent_type: 'mine', 'gather', 'collect', etc.
+        target_count: How many units to track (e.g. 64)
+        verify_spec: Optional dict with {type, item, count}
+    """
+    intent_type = args.get("intent_type", "")
+    target_count = int(args.get("target_count", 0))
+    verify_spec = args.get("verify_spec")
+
+    if not intent_type or target_count <= 0:
+        return json.dumps({"error": "intent_type and target_count > 0 required"})
+
+    payload = {
+        "intent_type": intent_type,
+        "target_count": target_count,
+        "verify_spec": verify_spec,
+    }
+    resp = _api_post("/executor/start-intent", payload)
+    if not resp.get("ok"):
+        return f"Error: {resp.get('error', 'start-intent failed')}"
+    return json.dumps(resp.get("data", {}))
+
+
+registry.register(
+    name="mc_start_quantified_intent",
+    toolset="minecraft",
+    schema=MC_START_QUANTIFIED_INTENT_SCHEMA,
+    handler=lambda args, **kw: _handle_mc_start_quantified_intent(args, **kw),
+)
+
+# ═══════════════════════════════════════════════════════════════════
+# mc_submit_plan — Hermes submits a PlanManifest for orchestration
+# ═══════════════════════════════════════════════════════════════════
+
+MC_SUBMIT_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "manifest": {
+            "type": "object",
+            "description": "Full PlanManifest dict matching the schema from mc_plan_decompose.",
+        },
+    },
+    "required": ["manifest"],
+}
+
+
+def _handle_mc_submit_plan(args: dict, **kwargs) -> str:
+    """Submit a PlanManifest for execution by the PlanOrchestrator.
+
+    Writes to plan_manifest.json, which agent_loop.py polls on heartbeat ticks.
+    The orchestrator validates (anti-hallucination guard: every SubPlan must
+    have a VerifySpec) and executes sub-plans respecting order and depends_on.
+
+    Use mc_plan_decompose first to get the schema + validation rules,
+    then call mc_submit_plan with the completed manifest.
+    """
+    manifest = args.get("manifest")
+    if not manifest:
+        return json.dumps({"error": "manifest is required"})
+
+    payload = {"manifest": manifest}
+    resp = _api_post("/plan/submit", payload)
+    if not resp.get("ok"):
+        return f"Error: {resp.get('error', 'plan submission failed')}"
+    return json.dumps(resp.get("data", {"received": True}))
+
+
+registry.register(
+    name="mc_submit_plan",
+    toolset="minecraft",
+    schema=MC_SUBMIT_PLAN_SCHEMA,
+    handler=lambda args, **kw: _handle_mc_submit_plan(args, **kw),
+)
