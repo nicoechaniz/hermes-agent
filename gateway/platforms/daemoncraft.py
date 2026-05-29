@@ -165,7 +165,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         context stream, which the CLI can observe.
         """
         try:
-            queue_path = Path.home() / ".hermes" / "sessions" / "compaii-events.jsonl"
+            # Match agent_loop's path: ~/.hermes/sessions/<BOT_USERNAME>-events.jsonl
+            bot_user = (os.getenv("MC_USERNAME") or self._bot_username or "CompAII")
+            queue_path = Path.home() / ".hermes" / "sessions" / f"{bot_user}-events.jsonl"
             queue_path.parent.mkdir(parents=True, exist_ok=True)
             with open(queue_path, "a") as f:
                 f.write(json.dumps(event) + "\n")
