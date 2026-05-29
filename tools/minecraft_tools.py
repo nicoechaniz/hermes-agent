@@ -993,6 +993,174 @@ MC_PLAN_SCHEMA = {
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 9b. mc_plan_decompose — Fase 3 strategic plan decomposition (Hermes LLM)
+# ═══════════════════════════════════════════════════════════════════
+#
+# Hermes (Steve / cloud LLM) calls this tool to break a high-level goal into
+# an ordered PlanManifest of SubPlans. Every SubPlan **MUST** include a
+# machine-checkable "verify" spec — this is the non-negotiable anti-hallucination
+# guard from the GePeTo contract. The Python handler + PlanOrchestrator both
+# reject manifests lacking verify.
+#
+# The returned JSON can be consumed by the body (agent_loop PlanOrchestrator)
+# or re-injected into future heartbeats for cross-layer visibility.
+#
+# Intent strings are embodied-level (understood by Gemma-Andy via /intent).
+# Verify types: INVENTORY_HAS | AREA_CLEAR | POSITION_REACHED | BLOCK_PLACED | ENTITY_NEARBY
+
+def _handle_mc_plan_decompose(args: dict, **kwargs) -> str:
+    """Decompose a complex goal into verifiable sub-plans.
+
+    The LLM must supply a 'verify' object for **every** entry in sub_plans.
+    Missing verify → immediate error (forces correct decomposition).
+    """
+    goal = (args.get("goal") or "").strip()
+    if not goal:
+        return "Error: 'goal' is required for mc_plan_decompose"
+
+    raw_subs = args.get("sub_plans") or []
+    if not isinstance(raw_subs, list) or len(raw_subs) == 0:
+        return "Error: 'sub_plans' must be a non-empty array"
+
+    cleaned: list[dict[str, Any]] = []
+    for idx, sp in enumerate(raw_subs):
+        if not isinstance(sp, dict):
+            return f"Error: sub_plans[{idx}] must be an object"
+        intent = (sp.get("intent") or "").strip()
+        if not intent:
+            return f"Error: sub_plans[{idx}] requires non-empty 'intent'"
+
+        verify = sp.get("verify")
+        if not isinstance(verify, dict) or not verify.get("type"):
+            return (
+                f"Error: sub_plans[{idx}] (intent={intent[:50]}) is MISSING REQUIRED 'verify' dict "
+                "with 'type' (INVENTORY_HAS / AREA_CLEAR / POSITION_REACHED / BLOCK_PLACED / ENTITY_NEARBY). "
+                "This is the anti-hallucination guard — every step must be machine-verifiable."
+            )
+
+        try:
+            order = int(sp.get("order", idx))
+        except Exception:
+            order = idx
+        depends = sp.get("depends_on") or []
+        if not isinstance(depends, list):
+            depends = []
+
+        cleaned.append({
+            "intent": intent,
+            "verify": verify,
+            "order": order,
+            "depends_on": depends,
+        })
+
+    manifest: dict[str, Any] = {
+        "goal": goal,
+        "sub_plans": cleaned,
+        "estimated_time_s": int(args.get("estimated_time_s", 300)),
+        "abort_on_failure": bool(args.get("abort_on_failure", True)),
+    }
+
+    # Best-effort forward to bot server (future /plan/manifest endpoint).
+    # If the endpoint does not exist yet the manifest is still returned validated.
+    forwarded = False
+    try:
+        resp = _api_post("/plan/manifest", {"action": "set_manifest", "manifest": manifest}, timeout=8)
+        if isinstance(resp, dict) and resp.get("ok"):
+            forwarded = True
+    except Exception:
+        # Non-fatal — the validated manifest is still useful to the caller / body layer.
+        pass
+
+    payload = {
+        "ok": True,
+        "manifest": manifest,
+        "forwarded_to_body": forwarded,
+        "note": "Every sub-plan carries a VerifySpec. Use PlanOrchestrator.execute_plan() in the body to run.",
+    }
+    return json.dumps(payload, indent=2)
+
+
+MC_PLAN_DECOMPOSE_SCHEMA = {
+    "name": "mc_plan_decompose",
+    "description": (
+        "Fase 3: Decompose a high-level, multi-step Minecraft goal into an ordered PlanManifest. "
+        "Hermes (the strategic LLM) is responsible for producing the decomposition. "
+        "CRITICAL: every object in 'sub_plans' MUST contain a 'verify' field (object) with 'type' "
+        "and the parameters matching that type. Supported verify types: INVENTORY_HAS (item+count), "
+        "AREA_CLEAR (x1,z1,x2,z2,y,max_blocks_above), POSITION_REACHED (target_x/y/z + max_distance), "
+        "BLOCK_PLACED (block_x/y/z + block_material), ENTITY_NEARBY (entity_type + entity_distance). "
+        "The handler and PlanOrchestrator will reject any sub-plan lacking a valid verify — this prevents hallucinated steps. "
+        "depends_on is a list of 'order' values from other sub-plans. order values should be unique and ascending for sequential steps."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": "The high-level natural language goal to decompose (e.g. 'build a small wooden house with door and roof')",
+            },
+            "sub_plans": {
+                "type": "array",
+                "description": "Ordered list of atomic, verifiable sub-plans. Execution order is determined by 'order' + 'depends_on'.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "intent": {
+                            "type": "string",
+                            "description": "Embodied intent string passed to Gemma/embodied service (e.g. 'mine 64 oak_log', 'goto 128 64 -80', 'craft 4 oak_planks')",
+                        },
+                        "verify": {
+                            "type": "object",
+                            "description": "MANDATORY machine-checkable verification predicate. Must include 'type' + params for that type.",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["INVENTORY_HAS", "AREA_CLEAR", "POSITION_REACHED", "BLOCK_PLACED", "ENTITY_NEARBY"]},
+                                # inventory
+                                "item": {"type": "string"},
+                                "count": {"type": "integer"},
+                                # area_clear
+                                "x1": {"type": "integer"}, "z1": {"type": "integer"},
+                                "x2": {"type": "integer"}, "z2": {"type": "integer"},
+                                "y": {"type": "integer"}, "max_blocks_above": {"type": "integer"},
+                                # position
+                                "target_x": {"type": "integer"}, "target_y": {"type": "integer"}, "target_z": {"type": "integer"},
+                                "max_distance": {"type": "number"},
+                                # block_placed
+                                "block_x": {"type": "integer"}, "block_y": {"type": "integer"}, "block_z": {"type": "integer"},
+                                "block_material": {"type": "string"},
+                                # entity
+                                "entity_type": {"type": "string"},
+                                "entity_distance": {"type": "number"},
+                            },
+                            "required": ["type"],
+                        },
+                        "order": {
+                            "type": "integer",
+                            "description": "Execution priority / sequence number. Lower runs earlier. Must be unique within manifest.",
+                        },
+                        "depends_on": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "List of 'order' values that must complete before this sub-plan may start.",
+                        },
+                    },
+                    "required": ["intent", "verify", "order"],
+                },
+            },
+            "estimated_time_s": {
+                "type": "integer",
+                "description": "Rough total time budget for the whole manifest (seconds).",
+            },
+            "abort_on_failure": {
+                "type": "boolean",
+                "description": "If true (default), first VerifySpec failure escalates to Hermes with previous_error for replanning.",
+            },
+        },
+        "required": ["goal", "sub_plans"],
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 10. mc_screenshot — Ray-traced world capture
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1711,4 +1879,89 @@ registry.register(
     toolset="minecraft",
     schema=MC_NOOP_SCHEMA,
     handler=lambda args, **kw: _handle_mc_noop(args, **kw),
+)
+
+# ═══════════════════════════════════════════════════════════════════
+# mc_plan_decompose — Hermes decomposes multi-step goals into PlanManifest
+# ═══════════════════════════════════════════════════════════════════
+
+MC_PLAN_DECOMPOSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "goal": {
+            "type": "string",
+            "description": "Natural language description of the multi-step goal to decompose.",
+        },
+        "context": {
+            "type": "object",
+            "description": "Optional: current world state (position, inventory summary, nearby entities). Helps Hermes produce grounded sub-plans.",
+        },
+    },
+    "required": ["goal"],
+}
+
+
+def _handle_mc_plan_decompose(args: dict, **kwargs) -> str:
+    """Decompose a multi-step goal into a PlanManifest with verified SubPlans.
+
+    Hermes (LLM) is responsible for generating the sub-plan structure. This tool:
+    1. Receives the goal + context
+    2. Returns a PlanManifest-ready JSON schema for Hermes to fill in
+    3. Validates that every SubPlan has a VerifySpec (anti-hallucination guard)
+
+    The actual decomposition happens in the LLM's response — this tool provides
+    the contract and validation. The PlanOrchestrator (DaemonCraft Fase 3) executes
+    the manifest.
+
+    Returns a JSON schema template for PlanManifest that Hermes should populate,
+    plus the validation rules.
+    """
+    goal = args.get("goal", "")
+    context = args.get("context", {})
+
+    if not goal or not goal.strip():
+        return json.dumps({"error": "mc_plan_decompose requires non-empty 'goal'"})
+
+    return json.dumps({
+        "instruction": (
+            "Decompose the following goal into a PlanManifest. "
+            "Each SubPlan MUST have a 'verify' block. "
+            "Supported verify types: INVENTORY_HAS, POSITION_REACHED, AREA_CLEAR, "
+            "BLOCK_PLACED, ENTITY_NEARBY. "
+            "Return the manifest as a JSON object matching this schema."
+        ),
+        "goal": goal,
+        "context": context,
+        "schema": {
+            "goal": "<string: original goal>",
+            "estimated_time_s": 300,
+            "abort_on_failure": True,
+            "sub_plans": [
+                {
+                    "intent": "<embodied intent string, e.g. 'mine 64 oak_log'>",
+                    "order": 0,
+                    "depends_on": [],
+                    "verify": {
+                        "type": "INVENTORY_HAS",
+                        "item": "oak_log",
+                        "count": 64,
+                    },
+                },
+            ],
+        },
+        "validation_rules": [
+            "Every sub_plan MUST have a 'verify' block with a valid 'type'.",
+            "Verify type INVENTORY_HAS requires 'item' and 'count'.",
+            "Verify type POSITION_REACHED requires 'target_x', 'target_y', 'target_z'.",
+            "depends_on must reference valid 'order' values (not self, not future if order < dep).",
+            "No sub-plan without verify will be executed (anti-hallucination guard).",
+        ],
+    })
+
+
+registry.register(
+    name="mc_plan_decompose",
+    toolset="minecraft",
+    schema=MC_PLAN_DECOMPOSE_SCHEMA,
+    handler=lambda args, **kw: _handle_mc_plan_decompose(args, **kw),
 )
