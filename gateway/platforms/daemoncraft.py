@@ -610,6 +610,23 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         prompt_text = "".join(prompt_parts)
 
+        # Auto-consume pending judges before dispatching to L4
+        pending_judges = body.get("pending_judges") or []
+        if pending_judges and self._session:
+            try:
+                l4_ticks = [j["captured_at_tick"] for j in pending_judges if j.get("initiator") == "l4_agent"]
+                if l4_ticks:
+                    async with self._session.post(
+                        f"{self._bot_api_url}/judge/consume",
+                        json={"ticks": l4_ticks},
+                        timeout=aiohttp.ClientTimeout(total=3),
+                    ) as resp:
+                        result = await resp.json()
+                        logger.debug("[DaemonCraft] Consumed %d judge entries, %d remaining",
+                                     result.get("consumed", 0), result.get("remaining", 0))
+            except Exception:
+                pass
+
         source = self.build_source(
             chat_id=self._group_chat_id(),
             chat_name="world",
