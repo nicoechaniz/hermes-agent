@@ -160,6 +160,18 @@ def _fmt(resp: dict) -> str:
     parts = []
     if "result" in resp:
         parts.append(f"Result: {resp['result']}")
+    # Include judge if present (before state — agent needs to see outcome first)
+    if "_judge" in resp and isinstance(resp["_judge"], dict):
+        j = resp["_judge"]
+        j_parts = [f"Judge: {j.get('outcome', '?')} ({j.get('confidence', '?')})"]
+        if j.get("reason_code"):
+            j_parts.append(f"[{j['reason_code']}]")
+        delta = j.get("position_delta")
+        if delta:
+            j_parts.append(f"Delta: dx={delta.get('dx',0):+.1f}, dy={delta.get('dy',0):+.1f}, dz={delta.get('dz',0):+.1f}")
+        if j.get("error"):
+            j_parts.append(f"Error: {j['error']}")
+        parts.append(" ".join(j_parts))
     if "task_id" in resp:
         parts.append(f"Task {resp['task_id']} started ({resp.get('status', 'running')})")
     if "task" in resp and isinstance(resp.get("task"), dict):
