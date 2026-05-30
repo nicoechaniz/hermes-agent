@@ -113,6 +113,7 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("minecraft",       "⛏️  Minecraft",                 "perceive, navigate, build, craft, combat, manage, screenshot, command, story"),
+    ("embodiment",      "🤖 Embodiment",               "mc_bit, embodied_plan"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),

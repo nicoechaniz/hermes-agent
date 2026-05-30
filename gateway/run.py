@@ -20963,6 +20963,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "tools": [],
                 }
 
+            # DC-134+: per-profile model/provider override (DaemonCraft wake-up routing, etc.)
+            # When source.profile is set, load that profile's config and override the global
+            # model/provider so wake-up turns use the embodied agent's profile.
+            if _profile_name:
+                try:
+                    import yaml as _yaml
+                    _profile_cfg_path = Path.home() / ".hermes" / "profiles" / _profile_name / "config.yaml"
+                    if _profile_cfg_path.exists():
+                        _profile_cfg = _yaml.safe_load(_profile_cfg_path.read_text()) or {}
+                        _profile_model_cfg = _profile_cfg.get("model", {})
+                        if _profile_model_cfg.get("default") and _profile_model_cfg.get("provider"):
+                            model = _profile_model_cfg["default"]
+                            runtime_kwargs["provider"] = _profile_model_cfg["provider"]
+                            if _profile_model_cfg.get("base_url"):
+                                runtime_kwargs["base_url"] = _profile_model_cfg["base_url"]
+                            # Only override api_mode if explicitly set in profile
+                            _profile_api_mode = _profile_model_cfg.get("api_mode")
+                            if _profile_api_mode:
+                                runtime_kwargs["api_mode"] = _profile_api_mode
+                            logger.info(
+                                "Profile model override: profile=%s model=%s provider=%s",
+                                _profile_name, model, runtime_kwargs.get("provider"),
+                            )
+                except Exception:
+                    logger.exception("Failed to load profile model config for %s", _profile_name)
+
             pr = self._provider_routing
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
