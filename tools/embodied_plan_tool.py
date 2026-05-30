@@ -71,8 +71,29 @@ def _policy_mode_default() -> str:
 
 
 # ---------------------------------------------------------------------------
-# HTTP helper
+# HTTP helpers
 # ---------------------------------------------------------------------------
+
+def _cancel_bot_task(bot_api_url: str | None = None) -> None:
+    """Cancel any active task on the bot server before sending a new intent.
+
+    Fire-and-forget with a 2-second timeout — we never block a new
+    embodied_plan call waiting for the old task to finish. If the bot
+    is unreachable or the cancel fails, we proceed anyway; the new
+    intent will surface the conflict as a tool-level 409 if needed.
+
+    This prevents the #1 cause of embodied_plan timeouts: calling a
+    new intent while the bot is still executing tool_calls from the
+    previous plan."""
+
+    url = bot_api_url or os.environ.get("BOT_API_URL")
+    if not url:
+        return
+    try:
+        httpx.post(f"{url.rstrip('/')}/task/cancel", json={}, timeout=2.0)
+    except Exception:
+        pass  # Fire-and-forget — bot might be down, we proceed either way
+
 
 def _post_intent(body: dict[str, Any]) -> dict[str, Any]:
     """POST *body* to the embodied-service ``/intent`` endpoint and return the
@@ -415,6 +436,13 @@ EMBODIED_PLAN_SCHEMA = {
 
 def _handler(args: dict[str, Any] | None = None, **_kw: Any) -> str:
     args = args or {}
+
+    # Auto-cancel any active bot task before sending a new intent.
+    # Without this, a second embodied_plan call times out because the
+    # bot still has currentTask.status='running' from the previous
+    # plan's fire-and-forget tool_calls. See card t_c518b077.
+    _cancel_bot_task(args.get("bot_api_url"))
+
     policy_mode = args.get("policy_mode")
     if policy_mode is None:
         policy_mode = _policy_mode_default()
