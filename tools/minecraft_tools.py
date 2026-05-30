@@ -2075,3 +2075,116 @@ registry.register(
     schema=MC_SUBMIT_PLAN_SCHEMA,
     handler=lambda args, **kw: _handle_mc_submit_plan(args, **kw),
 )
+
+# ═══════════════════════════════════════════════════════════════════
+# mc_macro — Pre-canned multi-step skills (staircase, spiral, etc.)
+# ═══════════════════════════════════════════════════════════════════
+
+MC_MACRO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "macro": {
+            "type": "string",
+            "enum": ["staircase", "spiral", "tunnel"],
+            "description": "Which macro skill to execute. 'staircase' mines a 1-wide diagonal staircase upward in a cardinal direction. 'spiral' rotates direction every N steps to create a caracol staircase. 'tunnel' mines a 2-high 1-wide horizontal tunnel in a cardinal direction."
+        },
+        "direction": {
+            "type": "string",
+            "enum": ["west", "east", "north", "south"],
+            "description": "Cardinal direction. Required for 'staircase' and 'tunnel'."
+        },
+        "target_y": {
+            "type": "number",
+            "description": "Target Y level. Required for 'staircase' and 'spiral'."
+        },
+        "steps_per_side": {
+            "type": "number",
+            "description": "For 'spiral': steps before rotating 90°. 2 = tight spiral with 1-block center pillar. Default 3."
+        },
+        "distance": {
+            "type": "number",
+            "description": "For 'tunnel': how many blocks to tunnel. Default 10."
+        },
+    },
+    "required": ["macro"],
+}
+
+
+def _handle_mc_macro(args: dict, **kwargs) -> str:
+    """Execute a pre-canned macro skill via POST /macro."""
+    macro = args.get("macro")
+    if not macro:
+        return "Error: 'macro' is required. Available: staircase, spiral"
+
+    if macro == "staircase":
+        direction = args.get("direction")
+        target_y = args.get("target_y")
+        if not direction:
+            return "Error: 'direction' is required for staircase (west/east/north/south)"
+        if target_y is None:
+            return "Error: 'target_y' is required for staircase"
+
+        resp = _api_post("/macro", {
+            "macro": "staircase",
+            "direction": direction,
+            "target_y": target_y,
+        }, timeout=600)
+
+        if not resp.get("ok"):
+            return f"Error: {resp.get('error', 'staircase failed')}"
+        return (
+            f"{resp.get('message', 'Done.')}\n"
+            f"steps: {resp.get('steps', '?')}, "
+            f"finalY: {resp.get('finalY', '?')}"
+        )
+
+    if macro == "spiral":
+        target_y = args.get("target_y")
+        steps_per_side = args.get("steps_per_side")
+        if target_y is None:
+            return "Error: 'target_y' is required for spiral"
+
+        body = {"macro": "spiral", "target_y": target_y}
+        if steps_per_side is not None:
+            body["steps_per_side"] = steps_per_side
+
+        resp = _api_post("/macro", body, timeout=600)
+
+        if not resp.get("ok"):
+            return f"Error: {resp.get('error', 'spiral failed')}"
+        return (
+            f"{resp.get('message', 'Done.')}\n"
+            f"steps: {resp.get('steps', '?')}, "
+            f"finalY: {resp.get('finalY', '?')}"
+        )
+
+    if macro == "tunnel":
+        direction = args.get("direction")
+        distance = args.get("distance", 10)
+        if not direction:
+            return "Error: 'direction' is required for tunnel (west/east/north/south)"
+
+        resp = _api_post("/macro", {
+            "macro": "tunnel",
+            "direction": direction,
+            "distance": distance,
+        }, timeout=600)
+
+        if not resp.get("ok"):
+            return f"Error: {resp.get('error', 'tunnel failed')}"
+        return (
+            f"{resp.get('message', 'Done.')}\n"
+            f"steps: {resp.get('steps', '?')}, "
+            f"from: ({resp.get('startPos', {}).get('x', '?')},{resp.get('startPos', {}).get('y', '?')},{resp.get('startPos', {}).get('z', '?')}), "
+            f"to: ({resp.get('endPos', {}).get('x', '?')},{resp.get('endPos', {}).get('y', '?')},{resp.get('endPos', {}).get('z', '?')})"
+        )
+
+    return f"Error: unknown macro '{macro}'. Available: staircase, spiral, tunnel"
+
+
+registry.register(
+    name="mc_macro",
+    toolset="minecraft",
+    schema=MC_MACRO_SCHEMA,
+    handler=lambda args, **kw: _handle_mc_macro(args, **kw),
+)
