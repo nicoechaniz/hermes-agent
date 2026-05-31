@@ -1259,7 +1259,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e), retryable=True)
 
         # DC-123: relay TTS to dashboard after successful outbound message.
-        system_tts_skip = {"steer", "gateway shutting down", "synthetic mc_perceive", "heartbeat", "mc_perceive"}
+        system_tts_skip = {"steer", "gateway shutting down", "synthetic mc_perceive", "heartbeat", "mc_perceive", "queued", "⏳"}
         is_system_msg = any(skip in content.lower() for skip in system_tts_skip)
         if (content and content.strip() not in ("PASS", "")
                 and not is_system_msg
