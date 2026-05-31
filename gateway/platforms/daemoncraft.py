@@ -136,6 +136,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._plan_gc_timeout: int = (config.extra or {}).get("plan_gc_timeout_seconds", 300)
         self._turn_counter: int = 0  # Sequential turn counter for agent logs
         self._last_idle_wake_up: float = 0.0  # Throttle idle wake-ups
+        self._session_epoch: int = int(time.time())  # Unique per restart — forces fresh session, prevents word-latching
 
         # Load allowlist by UUID (preferred) or username fallback.
         raw_allow = os.getenv("DAEMONCRAFT_ALLOWED_USERS", "").strip()
@@ -969,7 +970,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             platform=Platform.DAEMONCRAFT,
             chat_id=self._group_chat_id(),
             chat_type="group",
-            user_id=self._bot_username,
+            user_id=f"{self._bot_username}:{self._session_epoch}",  # epoch prevents stale session reuse
             thread_id="world",
         )
         session_key = build_session_key(
