@@ -1034,9 +1034,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         )
         source.profile = self._profile
 
-        # Skip agent turn — write chat to event queue (bridge to CLI via agent_loop)
-        if await self._is_lab_mode():
-            logger.info("[DaemonCraft] Chat from %s queued to event bridge", from_)
+        # Always inject chat into the world session so autonomous McCompaii sees it.
+        # When lab mode is active (human controls via CLI), mark internal to suppress
+        # auto-response — the CLI session handles the reply. Still write to event queue
+        # for the CLI bridge so it can pick up the message text.
+        lab = await self._is_lab_mode()
+        if lab:
+            logger.info("[DaemonCraft] Chat from %s injected to world session (lab mode — no auto-response)", from_)
             self._write_event_to_queue({
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "src": "gateway",
@@ -1044,13 +1048,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                 "player": from_,
                 "text": text,
             })
-            return
 
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=entry,
+            internal=lab,  # suppress auto-response when human is driving
         )
 
         await self.handle_message(event)
