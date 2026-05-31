@@ -17640,6 +17640,8 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if tool_choice:
+                agent.request_overrides["tool_choice"] = tool_choice
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

@@ -36,12 +36,18 @@ from typing import Any
 import httpx
 
 from tools.registry import registry
+from tools.bot_api_url_ctx import get_bot_api_url
 
 logger = logging.getLogger(__name__)
 
 
 def _service_url() -> str:
     return os.environ.get("EMBODIED_SERVICE_URL", "http://localhost:7790").rstrip("/")
+
+
+def _bot_api_url(args: dict[str, Any]) -> str | None:
+    """Resolve bot API URL from args, env, or gateway context."""
+    return args.get("bot_api_url") or os.environ.get("BOT_API_URL") or get_bot_api_url() or None
 
 
 def _timeout() -> float:
@@ -134,6 +140,47 @@ def _post_intent(body: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Result summarizer — gives the LLM a one-line verdict instead of raw JSON
+# ---------------------------------------------------------------------------
+
+def _summarize_result(result: dict, intent: str) -> str:
+    """Return a one-line human-readable summary of what gAndy did."""
+    if not isinstance(result, dict):
+        return f"gAndy returned unexpected: {str(result)[:100]}"
+    
+    ok = result.get("ok")
+    plan = result.get("plan") or {}
+    exec_results = result.get("execution_results") or []
+    outcome = result.get("outcome", "")
+    
+    # Policy handled upstream
+    if result.get("policy_handled"):
+        return f"gAndy: handled by {result.get('policy_layer','?')} — {result.get('policy_reason','')[:120]}"
+    
+    # Success
+    if ok:
+        body_plan = plan.get("body_plan") or []
+        tool_names = [s.get("tool", "?") for s in body_plan[:3]] if isinstance(body_plan, list) else []
+        tools_str = ", ".join(tool_names) if tool_names else "acted"
+        if exec_results:
+            ok_count = sum(1 for r in exec_results if r.get("ok"))
+            return f"gAndy: OK — {ok_count}/{len(exec_results)} steps succeeded ({tools_str}). Intent: {intent[:80]}"
+        return f"gAndy: OK — {tools_str}. Intent: {intent[:80]}"
+    
+    # Failure
+    error = result.get("error") or {}
+    error_type = error.get("error_type", "unknown") if isinstance(error, dict) else str(error)[:80]
+    details = error.get("details", "") if isinstance(error, dict) else ""
+    if outcome == "policy_handled_upstream":
+        return f"gAndy: handled upstream ({error_type})"
+    if exec_results:
+        failed_steps = [r for r in exec_results if not r.get("ok")]
+        if failed_steps:
+            first = failed_steps[0]
+            return f"gAndy: FAILED — {first.get('error_type','?')}: {first.get('details','')[:100]}"
+    return f"gAndy: FAILED — {error_type}: {details[:100]}"
+
+# ---------------------------------------------------------------------------
 # Raw passthrough handler (debugging escape hatch)
 # ---------------------------------------------------------------------------
 
@@ -160,23 +207,19 @@ def _raw_handler(args: dict[str, Any]) -> str:
         if k in args and args[k] is not None:
             body[k] = args[k]
 
-    bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
+    bot_api_url = _bot_api_url(args)
     if bot_api_url:
         body["bot_api_url"] = bot_api_url
 
     result = _post_intent(body)
     
     # Tier 2a recovery: deterministic synthesis for spatial failures.
-    # If the service failed with a known spatial error (target_occupied,
-    # no_solid_neighbor, bot_in_target, block_not_in_inventory), try
-    # a simple coordinate offset or material substitute before giving up.
     failed = [r for r in (result.get("execution_results") or []) if not r.get("ok")]
     if failed and not body.get("previous_error"):
         first_failure = failed[0]
         error_type = first_failure.get("error_type", "")
         retry_body = dict(body)
         if error_type in ("target_occupied", "bot_in_target", "no_solid_neighbor"):
-            # Simple spatial recovery: add a hint to offset coordinates.
             retry_body["previous_error"] = {
                 "tool": first_failure.get("tool"),
                 "error_type": error_type,
@@ -184,6 +227,10 @@ def _raw_handler(args: dict[str, Any]) -> str:
             }
             retry_body["_recovery_hint"] = "spatial_retry_adjacent"
             result = _post_intent(retry_body)
+    
+    # Build a human-readable summary so the LLM doesn't have to parse the full JSON
+    summary = _summarize_result(result, body.get("intent", ""))
+    result["_summary"] = summary
     
     return json.dumps(result)
 
@@ -261,7 +308,7 @@ def _policy_handler(args: dict[str, Any]) -> str:
         if previous_error is not None:
             body["previous_error"] = previous_error
 
-        bot_api_url = args.get("bot_api_url") or os.environ.get("BOT_API_URL")
+        bot_api_url = _bot_api_url(args)
         if bot_api_url:
             body["bot_api_url"] = bot_api_url
 
@@ -441,7 +488,7 @@ def _handler(args: dict[str, Any] | None = None, **_kw: Any) -> str:
     # Without this, a second embodied_plan call times out because the
     # bot still has currentTask.status='running' from the previous
     # plan's fire-and-forget tool_calls. See card t_c518b077.
-    _cancel_bot_task(args.get("bot_api_url"))
+    _cancel_bot_task(_bot_api_url(args))
 
     policy_mode = args.get("policy_mode")
     if policy_mode is None:
