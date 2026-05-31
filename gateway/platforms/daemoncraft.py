@@ -523,8 +523,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                 source=source,
                 raw_message={"gc_reason": gc_reason},
                 internal=True,
-                tool_choice="required",
-            )
+                )
             await self.handle_message(event)
             return
 
@@ -610,6 +609,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         prompt_text = "".join(prompt_parts)
 
+        # Store for dashboard Bot Mind panel
+        self._last_prompt = prompt_text
+
         # Auto-consume pending judges before dispatching to L4
         pending_judges = body.get("pending_judges") or []
         if pending_judges and self._session:
@@ -643,7 +645,6 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             internal=True,
-            tool_choice="required",
         )
         await self.handle_message(event)
 
@@ -761,6 +762,18 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             if any(k in ev_str for k in ("damage", "hurt", "attack", "hit", "died", "killed")):
                 logger.info("[DaemonCraft] Wake-up reason: damage event '%s'", ev_str[:80])
                 return "wake_up"
+
+        # Death detected — force immediate wake-up so agent can react
+        body = data.get("body_session") or {}
+        current_deaths = body.get("deaths", 0)
+        if current_deaths > getattr(self, "_last_deaths", 0):
+            self._last_deaths = current_deaths
+            last = body.get("last_death") or {}
+            pos = last.get("position", {})
+            logger.info("[DaemonCraft] Wake-up reason: death #%d at (%.1f, %.1f, %.1f)",
+                        current_deaths, pos.get("x", 0), pos.get("y", 0), pos.get("z", 0))
+            return "wake_up"
+        self._last_deaths = current_deaths
 
         # Nearby hostile mobs
         hostile = {"zombie", "skeleton", "creeper", "spider", "enderman", "witch", "husk", "drowned", "phantom"}

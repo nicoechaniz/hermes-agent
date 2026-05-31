@@ -21445,6 +21445,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if tool_choice:
+                agent.request_overrides["tool_choice"] = tool_choice
             # Must-deliver notes for THIS turn ride the current user message
             # (api_content sidecar), never the system prompt: staged by
             # _handle_message_with_agent (auto-reset note, first-contact
