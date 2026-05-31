@@ -493,6 +493,8 @@ class DaemonCraftAdapter(BasePlatformAdapter):
           tool_choice="required". The agent MUST react with a tool call (or mc_no_op).
         - Active plans: every heartbeat while a plan is active forces a wake_up so
           the agent evaluates progress against the plan.
+        - L4 verdict (GAP #5): body_session.l4_verdict is formatted into prompt as
+          compact "[L4 last] ..." feedback line (observations+delta only, no prescription).
         """
         plan = data.get("plan") or {}
         await self._update_plan_tracking(plan)
@@ -576,6 +578,28 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # Runner state
         runner = body.get("runner_reflex", "IDLE")
         prompt_parts.append(f" Runner: {runner}.")
+
+        # Interoception enrichment: compact body_activity from L2 reflexes + L3 actions + preempts in the 90s dark window.
+        # Only present/non-empty when body was active (no noise on quiet cycles). Replaces verbose separate L2/actions lines.
+        body_act = (body.get("body_activity") or "").strip()
+        if body_act:
+            prompt_parts.append(f" [Body] {body_act}.")
+
+        # GAP #5: L4 last-action verdict (from judge) — injected into NEXT heartbeat only.
+        # Reports WHAT happened (outcome + delta), never prescribes next action (LLM must reason).
+        # Combines with L2 runner activity during the open-loop window for context.
+        l4v = body.get("l4_verdict")
+        if l4v and isinstance(l4v, dict):
+            l2_sum = (body.get("runner_activity") or {}).get("summary") or ""
+            l2_part = f" | L2: {l2_sum}" if l2_sum else ""
+            ago = l4v.get("seconds_ago", 0)
+            delta = l4v.get("delta", "0.0m")
+            rc = l4v.get("reason_code") or ""
+            outcome = l4v.get("outcome") or "?"
+            act = l4v.get("action") or "?"
+            # Compact one-line report; example: [L4 last] dig@540,115,-307: preempted RUNNER_ACTIVE delta=0.0m 14s ago | L2: 2 attacks, 1 flee
+            verdict_line = f"[L4 last] {act}: {outcome} {rc} delta={delta} {ago}s ago{l2_part}".strip()
+            prompt_parts.append(f" {verdict_line}.")
 
         # Nearby hostiles
         hostiles = body.get("nearby_hostiles") or []
