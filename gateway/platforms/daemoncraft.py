@@ -533,8 +533,8 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         event_type = self._classify_heartbeat_event(data)
         logger.info("[DaemonCraft] Heartbeat classified as: %s", event_type)
 
-        # Inject world state from the body (Gemma-Andy) instead of raw bot data
-        await self._inject_embodied_world_state(data)
+        # World-state injection REMOVED — was flooding gAndy with scans every heartbeat,
+        # interrupting McCompaii's own embodied_plan calls. L4 scans when HE decides.
 
         if event_type == "context":
             logger.debug("[DaemonCraft] Context-only heartbeat injected silently")
