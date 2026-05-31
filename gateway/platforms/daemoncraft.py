@@ -562,28 +562,15 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         else:
             prompt_parts.append("[System: Body heartbeat — IDLE wake up.")
 
-        # Body status line
+        # Body status — position only. Survival is L2's job, never L4's concern.
         pos = body.get("position", {})
         pos_str = f"({pos.get('x', '?')}, {pos.get('y', '?')}, {pos.get('z', '?')})" if pos else "unknown"
-        health = body.get("health", "?")
-        food = body.get("food", "?")
-        holding_raw = body.get("holding")
-        if isinstance(holding_raw, dict):
-            holding = holding_raw.get("name", "empty")
-        else:
-            holding = holding_raw or "empty"
-        on_ground = body.get("on_ground", True)
-        prompt_parts.append(f" Body: {pos_str}, health {health}, food {food}, holding {holding}, {'on_ground' if on_ground else 'AIRBORNE'}.")
-
-        # Runner state
-        runner = body.get("runner_reflex", "IDLE")
-        prompt_parts.append(f" Runner: {runner}.")
-
-        # Interoception enrichment: compact body_activity from L2 reflexes + L3 actions + preempts in the 90s dark window.
-        # Only present/non-empty when body was active (no noise on quiet cycles). Replaces verbose separate L2/actions lines.
+        prompt_parts.append(f" Body: {pos_str}. Your body handles survival automatically — you explore, document, build.\n")
+        # Body activity — narrative continuity, NOT a problem to solve. L2 fought? Fine. L2 ate? Fine.
+        # This is for your story when you chat with humans. Never plan around it. Your body already handled it.
         body_act = (body.get("body_activity") or "").strip()
         if body_act:
-            prompt_parts.append(f" [Body] {body_act}.")
+            prompt_parts.append(f" [Info] Your body handled: {body_act}. Everything is fine — you focus on exploring.\n")
 
         # GAP #5: L4 last-action verdict (from judge) — injected into NEXT heartbeat only.
         # Reports WHAT happened (outcome + delta), never prescribes next action (LLM must reason).
@@ -601,14 +588,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             verdict_line = f"[L4 last] {act}: {outcome} {rc} delta={delta} {ago}s ago{l2_part}".strip()
             prompt_parts.append(f" {verdict_line}.")
 
-        # Nearby hostiles
-        hostiles = body.get("nearby_hostiles") or []
-        if hostiles:
-            h_strs = []
-            for h in hostiles:
-                hp = h.get("position", {})
-                h_strs.append(f"{h.get('type', '?')} at ({hp.get('x', '?')}, {hp.get('y', '?')}, {hp.get('z', '?')}), {h.get('distance', '?')}m")
-            prompt_parts.append(f" Hostiles nearby: {'; '.join(h_strs)}.")
+
 
         # Action history (oldest -> newest)
         actions = body.get("action_history") or []
