@@ -136,6 +136,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._plan_gc_timeout: int = (config.extra or {}).get("plan_gc_timeout_seconds", 300)
         self._turn_counter: int = 0  # Sequential turn counter for agent logs
         self._last_idle_wake_up: float = 0.0  # Throttle idle wake-ups
+        self._task_signature_history: list = []  # Anti-loop watchdog: last N (action,status) tuples
+        self._task_loop_threshold: int = (config.extra or {}).get("task_loop_threshold", 4)
+        self._task_stale_seconds: int = (config.extra or {}).get("task_stale_seconds", 600)
         self._session_epoch: int = int(time.time())  # Unique per restart — forces fresh session, prevents word-latching
 
         # Load allowlist by UUID (preferred) or username fallback.
@@ -794,6 +797,35 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         if task and task.get("status") == "stuck":
             logger.info("[DaemonCraft] Wake-up reason: bot stuck (%s)", task.get("error", "unknown")[:60])
             return "wake_up"
+
+        # Anti-loop watchdog: same task signature across N heartbeats = stuck in a loop.
+        # The L4 may keep choosing the same action (e.g. deathpoint, mine, goto) without
+        # changing the world. We force a wake-up with an explicit loop message so the
+        # agent sees "you've been doing X for N heartbeats, pivot."
+        if task:
+            action = task.get("action", "")
+            tstatus = task.get("status", "")
+            elapsed = int(task.get("elapsed_s", 0) or 0)
+            signature = (action, tstatus, elapsed // 30)  # bucket elapsed by 30s
+            self._task_signature_history.append(signature)
+            if len(self._task_signature_history) > self._task_loop_threshold * 2:
+                self._task_signature_history = self._task_signature_history[-self._task_loop_threshold * 2:]
+            # Stale task: status="done" but elapsed_s huge = L4 is not acting on results
+            if tstatus == "done" and elapsed > self._task_stale_seconds:
+                logger.info(
+                    "[DaemonCraft] Wake-up reason: stale task '%s' done for %ds (>%ds threshold)",
+                    action, elapsed, self._task_stale_seconds,
+                )
+                return "wake_up"
+            # Repeated signature: same action+status (bucketed) for N consecutive heartbeats
+            if len(self._task_signature_history) >= self._task_loop_threshold:
+                recent = self._task_signature_history[-self._task_loop_threshold:]
+                if len(set(recent)) == 1:
+                    logger.warning(
+                        "[DaemonCraft] Wake-up reason: TASK LOOP detected — %s/%s repeated for %d heartbeats",
+                        action, tstatus, self._task_loop_threshold,
+                    )
+                    return "wake_up"
 
         # Idle heartbeat: wake up Steve so he can act autonomously
         # (progress on achievements, scout, etc.) Throttle to avoid token spam.
