@@ -1140,6 +1140,7 @@ def run_conversation(
         nous_auth_retry_attempted=False
         nous_paid_entitlement_refresh_attempted=False
         copilot_auth_retry_attempted=False
+        kimi_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
         invalid_encrypted_content_retry_attempted = False
         image_shrink_retry_attempted = False
@@ -2398,6 +2399,15 @@ def run_conversation(
                     copilot_auth_retry_attempted = True
                     if agent._try_refresh_copilot_client_credentials():
                         agent._buffer_vprint(f"🔐 Copilot credentials refreshed after 401. Retrying request...")
+                        continue
+                if (
+                    agent.provider in {"kimi-coding", "kimi-coding-cn"}
+                    and status_code == 401
+                    and not kimi_auth_retry_attempted
+                ):
+                    kimi_auth_retry_attempted = True
+                    if agent._try_refresh_kimi_client_credentials(force=True):
+                        agent._vprint(f"{agent.log_prefix}🔐 Kimi credentials refreshed after 401. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "anthropic_messages"
