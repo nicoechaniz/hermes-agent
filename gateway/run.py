@@ -4112,6 +4112,15 @@ class GatewayRunner:
         ``self.adapters``) are skipped silently; their sessions stay
         ``resume_pending`` and will auto-resume on the next real user
         message, or on the next gateway startup.
+
+        Tied to t_97b030a6 followup: in lab mode, auto-resume is
+        SKIPPED entirely. The lab mode is for human observation with
+        manual control. A stale auto-resume of an old session
+        (especially with a malformed plan) caused a 52-API-call,
+        14-minute loop with 0 user input on 2026-06-02. The session
+        stays ``resume_pending`` and will only fire when a real user
+        turn arrives (chat message, dashboard event, or explicit
+        /command). Lab mode is truly dormant between operator actions.
         """
         window = _auto_continue_freshness_window()
         try:
@@ -4126,6 +4135,47 @@ class GatewayRunner:
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
+            return 0
+
+        # Tied to t_97b030a6 followup: skip auto-resume in lab mode.
+        # Lab mode = manual control only. The user will trigger the
+        # L4 by sending a chat message; the resume_pending session
+        # is preserved and fires on that real user input.
+        daemoncraft_adapter = self.adapters.get(Platform.DAEMONCRAFT)
+        try:
+            lab_mode = False
+            if daemoncraft_adapter and hasattr(daemoncraft_adapter, "_is_lab_mode"):
+                # We need a sync check here. The adapter has an async
+                # _is_lab_mode; we do a quick HTTP probe instead.
+                bot_url = getattr(daemoncraft_adapter, "_bot_api_url", None)
+                if bot_url:
+                    try:
+                        import urllib.request
+                        with urllib.request.urlopen(
+                            f"{bot_url}/controller/mode",
+                            timeout=1.0,
+                        ) as resp:
+                            md = json.loads(resp.read())
+                            lab_mode = md.get("ok") and md.get("data", {}).get("mode") == "lab"
+                    except Exception:
+                        pass
+            if lab_mode:
+                logger.info(
+                    "[gateway] Lab mode active: SKIPPING auto-resume of %d session(s). "
+                    "They will fire on next real user turn.",
+                    len(candidates),
+                )
+                # Clear the resume_pending flag so they don't fire on
+                # the next gateway startup either, until the user
+                # explicitly says so.
+                for entry in candidates:
+                    entry.resume_pending = False
+                self.session_store._save_locked()  # noqa: SLF001
+                return 0
+        except Exception as _lab_check_exc:
+            logger.debug("lab mode check failed during auto-resume: %s", _lab_check_exc)
+            # If we can't determine, default to NOT auto-resuming
+            # (safer than auto-resuming in potentially-lab mode)
             return 0
 
         now = datetime.now()

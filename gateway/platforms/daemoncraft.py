@@ -820,7 +820,24 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         plan = data.get("plan") or {}
         await self._update_plan_tracking(plan)
 
-        # Run plan garbage collection before classification
+        # Run plan garbage collection before classification.
+        # Tied to t_97b030a6 followup: in lab mode, plan GC is
+        # silenced too. The plan is just a record; lab mode means
+        # Nico is observing and not driving the bot, so a stale
+        # plan should not fire events. Without this guard, the
+        # auto-resumed session's stale plan GC'd and re-fired the
+        # L4 in a loop (52 API calls, 14 min, 0 user input).
+        if await self._is_lab_mode():
+            # In lab mode, also clear any active plan so the L4
+            # has no reference to the dead auto-resume plan.
+            if self._plan_goal is not None:
+                logger.info("[DaemonCraft] Lab mode: clearing stale plan '%s' on heartbeat", self._plan_goal[:40])
+                self._plan_goal = None
+                self._plan_tasks_snapshot = []
+                self._plan_created_at = 0.0
+                self._plan_last_progress_at = 0.0
+            # Drop the heartbeat entirely.
+            return
         gc_reason = await self._maybe_gc_plan()
         if gc_reason:
             logger.info("[DaemonCraft] Plan GC: %s", gc_reason)
