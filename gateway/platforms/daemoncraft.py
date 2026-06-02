@@ -181,6 +181,21 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             chat_id.startswith(w + ":") for w in self._world_names
         )
 
+    def invoke_hook(self, hook_name: str, **kwargs):
+        """Wrapper around the hermes_cli.plugins invoke_hook helper.
+
+        The plugin system is hermes-cli-internal; this adapter sits
+        above the LLM loop and shouldn't import from hermes_cli
+        directly at module top (avoids a circular import when
+        hermes-cli imports back from the gateway package during
+        tests). We do a lazy import here.
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            return _invoke_hook(hook_name, **kwargs)
+        except Exception as _he:
+            logging.debug(f"invoke_hook({hook_name}) failed: {_he}")
+            return iter(())
 
     def _write_event_to_queue(self, event: dict) -> None:
         """Write an event to the daemoncraft-events.jsonl bridge file.
