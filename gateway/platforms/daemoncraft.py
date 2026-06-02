@@ -139,7 +139,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._task_signature_history: list = []  # Anti-loop watchdog: last N (action,status) tuples
         self._task_loop_threshold: int = (config.extra or {}).get("task_loop_threshold", 4)
         self._task_stale_seconds: int = (config.extra or {}).get("task_stale_seconds", 600)
-        self._session_epoch: int = int(time.time())  # Unique per restart — forces fresh session, prevents word-latching
+        self._session_epoch: int = int(time.time() * 1_000_000)  # microsecond resolution — practically zero collision risk between gateway restarts
 
         # Load allowlist by UUID (preferred) or username fallback.
         raw_allow = os.getenv("DAEMONCRAFT_ALLOWED_USERS", "").strip()
@@ -244,13 +244,46 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         Sets the bot_api_url context variable so that any tools (today:
         embodied_plan; previously: minecraft/altercraft) dispatched for
         this message target the correct bot server.
+
+        In lab mode, strip the re-entry "[System note: ...]" prefix that the
+        gateway prepends when restoring a session after a crash. The note would
+        otherwise wake the L4 with a turn containing only the previous state
+        summary, which is exactly the "no-op narration" pattern we want to
+        avoid in lab. Autonomous mode keeps the note (it's useful for
+        continuity when the L4 is meant to keep acting).
         """
         from tools.bot_api_url_ctx import set_bot_api_url, reset_bot_api_url
+        if event.text and await self._is_lab_mode():
+            stripped = self._strip_reentry_note(event.text)
+            if stripped != event.text:
+                logger.info(
+                    "[DaemonCraft] Stripped re-entry note in lab mode "
+                    "(%d → %d chars)",
+                    len(event.text), len(stripped),
+                )
+                event.text = stripped
         token = set_bot_api_url(self._bot_api_url)
         try:
             await super().handle_message(event)
         finally:
             reset_bot_api_url(token)
+
+    @staticmethod
+    def _strip_reentry_note(text: str) -> str:
+        """Remove the leading `[System note: ...]\n\n` block that gateway/run.py
+        prepends on session restore. Idempotent: if the text does not start
+        with that block, returns it unchanged.
+        """
+        import re
+        if not text.startswith("[System note:"):
+            return text
+        return re.sub(
+            r"^\[System note:.*?\]\s*\n\n",
+            "",
+            text,
+            count=1,
+            flags=re.DOTALL,
+        )
 
     # ------------------------------------------------------------------
     # WebSocket listener
@@ -499,7 +532,15 @@ class DaemonCraftAdapter(BasePlatformAdapter):
           the agent evaluates progress against the plan.
         - L4 verdict (GAP #5): body_session.l4_verdict is formatted into prompt as
           compact "[L4 last] ..." feedback line (observations+delta only, no prescription).
+
+        In lab mode, drop heartbeats entirely. We don't update plan tracking, we
+        don't poll the watchdog, and we don't create the L4 session in the
+        session_store. The session is only created when a real user turn arrives
+        (chat message, dashboard event, or explicit /command from the operator).
+        This keeps lab mode truly dormant between operator actions.
         """
+        if await self._is_lab_mode():
+            return
         plan = data.get("plan") or {}
         await self._update_plan_tracking(plan)
 
@@ -1038,6 +1079,27 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         text = entry.get("message", "")
         if not text:
+            return
+
+        # Filter: any message that starts with "/" is a Minecraft server command
+        # (e.g. "/gamemode creative", "/tp", "/time set day"). These are operator
+        # instructions, not agent prompts — they must not be injected into the L4
+        # session as a chat turn, otherwise the L4 reads them as user intents and
+        # acts. If we want to tell the L4 something about a command, we do it in
+        # natural language, not as a slash-command.
+        stripped = text.lstrip()
+        if stripped.startswith("/"):
+            logger.info(
+                "[DaemonCraft] Filtered /-command from %s (not injected to L4): %r",
+                from_, stripped[:80],
+            )
+            self._write_event_to_queue({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "src": "gateway",
+                "event": "filtered_command",
+                "player": from_,
+                "text": stripped,
+            })
             return
 
         is_whisper = entry.get("whisper", False)
