@@ -246,6 +246,22 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._last_seen_timestamp = int(time.time() * 1000)
         self._shutdown_event.clear()
         self._session = aiohttp.ClientSession()
+        # Cache the controller mode at connect() so the heartbeat
+        # classifier can short-circuit without an HTTP roundtrip on
+        # every heartbeat. Updated whenever the user toggles mode
+        # via /controller/mode.
+        self._controller_mode_cache = "autonomous"  # safe default
+        try:
+            async with self._session.get(
+                f"{self._bot_api_url}/controller/mode",
+                timeout=aiohttp.ClientTimeout(total=2.0),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        self._controller_mode_cache = data.get("data", {}).get("mode", "autonomous")
+        except Exception:
+            pass
 
         n = int(os.getenv("MC_CYCLE_N", "0"))
         window = int(os.getenv("MC_CYCLE_WINDOW", "20"))
@@ -611,7 +627,11 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # for any consumer that wants the full record (judge, ok, ts, etc.)
         import json as _json
         result_str = _json.dumps(data)
-        await self.invoke_hook("transform_tool_result", tool_name="mc_action_result", result=result_str)
+        # Tied to t_f8481d90: invoke_hook returns a sync iterator, not
+        # awaitable. Just iterate it (transform_tool_result is a
+        # fire-and-forget observer hook).
+        for _ in self.invoke_hook("transform_tool_result", tool_name="mc_action_result", result=result_str):
+            pass
 
         # NarrateGateTracker: capture this tool result with the typed fields.
         # No substring matching, no heuristic classification. The server
@@ -830,7 +850,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             return
 
-        event_type = self._classify_heartbeat_event(data)
+        event_type = await self._classify_heartbeat_event(data)
         logger.info("[DaemonCraft] Heartbeat classified as: %s", event_type)
 
         # World-state injection REMOVED — was flooding gAndy with scans every heartbeat,
@@ -1026,7 +1046,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         return None
 
-    def _classify_heartbeat_event(self, data: dict) -> str:
+    async def _classify_heartbeat_event(self, data: dict) -> str:
         """Classify heartbeat as 'context' or 'wake_up'.
 
         Wake-up triggers:
@@ -1035,7 +1055,34 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         - Health decreased from previous known value
         - Nearby hostile entities (zombie, skeleton, creeper, spider)
         - Explicit damage events in events list
+
+        In lab mode, NO wake_up triggers fire. Lab mode means: the
+        agent only acts on user input. Heartbeats add to context but
+        do not spawn agent turns. This is so the human operator has
+        full control during testing.
         """
+        # Lab mode silences ALL wake_up triggers. Only user input
+        # (chat message) drives the L4. Tied to t_97b030a6 followup.
+        # The check below is async because we need a HTTP roundtrip
+        # to /controller/mode (the mode is in the bot server's memory
+        # and may have changed since connect()). Cached for 5s.
+        now = time.time()
+        if (now - getattr(self, "_last_mode_check", 0)) > 5.0:
+            self._last_mode_check = now
+            try:
+                async with self._session.get(
+                    f"{self._bot_api_url}/controller/mode",
+                    timeout=aiohttp.ClientTimeout(total=1.0),
+                ) as resp:
+                    if resp.status == 200:
+                        md = await resp.json()
+                        if md.get("ok"):
+                            self._controller_mode_cache = md.get("data", {}).get("mode", "autonomous")
+            except Exception:
+                pass
+        if getattr(self, "_controller_mode_cache", None) == "lab":
+            return "context"
+
         status = data.get("status") or {}
         nearby = data.get("nearby") or {}
         events = data.get("events") or []
