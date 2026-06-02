@@ -27,6 +27,7 @@ import aiohttp
 from aiohttp import WSMsgType
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.daemoncraft_antiloop import StuckPivotTracker
 
 # ---------------------------------------------------------------------------
 # CycleDetector — ported from daemoncraft agents/safety.py (stdlib-only)
@@ -139,6 +140,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._task_signature_history: list = []  # Anti-loop watchdog: last N (action,status) tuples
         self._task_loop_threshold: int = (config.extra or {}).get("task_loop_threshold", 4)
         self._task_stale_seconds: int = (config.extra or {}).get("task_stale_seconds", 600)
+        # StuckPivotTracker: detect same-objective / no-progress thrash using
+        # judge verdicts + position. Threshold + bucket size are config-tunable.
+        self._stuck_pivot_tracker = StuckPivotTracker(
+            threshold=(config.extra or {}).get("stuck_pivot_threshold", 3),
+            bucket_size=(config.extra or {}).get("spatial_bucket_blocks", 5),
+            cooldown_seconds=(config.extra or {}).get("stuck_pivot_cooldown_seconds", 120.0),
+        )
         self._session_epoch: int = int(time.time() * 1_000_000)  # microsecond resolution — practically zero collision risk between gateway restarts
 
         # Load allowlist by UUID (preferred) or username fallback.
@@ -439,6 +447,40 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[DaemonCraft] /agent/interrupt exception: %s", e)
 
+    async def _force_pivot_interrupt(self, pivot_reason: str) -> None:
+        """Abort the L4's stuck turn and queue a pivot directive as a system
+        message. The system message is constructed so that it survives the
+        re-entry note filter (it's not a [System note: ...] prefix) and the
+        /-command filter (it doesn't start with /). The L4 receives the
+        directive at the start of its next turn and must radically change
+        category of action.
+        """
+        # 1. Abort the in-progress LLM turn via the bot server interrupt endpoint.
+        await self._interrupt_agent(pivot_reason)
+
+        # 2. Reset the tracker so the next turn starts fresh.
+        self._stuck_pivot_tracker.reset_turn()
+
+        # 3. Inject the pivot directive as a system message into the L4.
+        # Mirrors the pattern used by plan_cancelled at line ~595.
+        source = self.build_source(
+            chat_id=self._group_chat_id(),
+            chat_name="world",
+            chat_type="group",
+            user_id="system",
+            user_name="System",
+            thread_id="world",
+        )
+        source.profile = self._profile
+        event = MessageEvent(
+            text=f"[Pivot directive] {pivot_reason}",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={"pivot_reason": pivot_reason, "type": "stuck_pivot"},
+            internal=True,
+        )
+        await self.handle_message(event)
+
     async def _handle_quest_event(self, data: dict) -> None:
         """Process a quest_event from the QuestEngine.
 
@@ -541,6 +583,24 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         """
         if await self._is_lab_mode():
             return
+
+        # StuckPivotTracker: detect same-objective / no-progress thrash and
+        # interrupt the active L4 turn with a pivot message. Only fires in
+        # autonomous mode (lab already returned above). Runs on every
+        # heartbeat — cheap O(1) state update.
+        body_session = data.get("body_session") or {}
+        status = data.get("status") or {}
+        pending_judges = body_session.get("pending_judges") or []
+        pivot_reason = self._stuck_pivot_tracker.record_heartbeat(
+            body_session=body_session,
+            status=status,
+            pending_judges=pending_judges,
+            now=time.time(),
+        )
+        if pivot_reason:
+            logger.warning("[DaemonCraft] Stuck pivot triggered: %s", pivot_reason)
+            await self._force_pivot_interrupt(pivot_reason)
+
         plan = data.get("plan") or {}
         await self._update_plan_tracking(plan)
 
