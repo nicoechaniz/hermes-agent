@@ -28,6 +28,11 @@ from aiohttp import WSMsgType
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.daemoncraft_antiloop import StuckPivotTracker
+from gateway.platforms.daemoncraft_narrategate import (
+    NarrateGateTracker,
+    _classify_outcome,
+    _narrate_action_category,
+)
 
 # ---------------------------------------------------------------------------
 # CycleDetector — ported from daemoncraft agents/safety.py (stdlib-only)
@@ -146,6 +151,15 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             threshold=(config.extra or {}).get("stuck_pivot_threshold", 3),
             bucket_size=(config.extra or {}).get("spatial_bucket_blocks", 5),
             cooldown_seconds=(config.extra or {}).get("stuck_pivot_cooldown_seconds", 120.0),
+        )
+        # NarrateGateTracker: detect when the L4 narrates a past-tense action
+        # that contradicts the most recent mc_* tool result. Records every tool
+        # result so the gateway can check the LLM's next assistant text against
+        # the verified tool outcome. Part of Opción B for t_0fa2c6dc.
+        self._narrate_gate_tracker = NarrateGateTracker(
+            reminder_cooldown_seconds=(config.extra or {}).get(
+                "narrate_reminder_cooldown_seconds", 30.0,
+            ),
         )
         self._session_epoch: int = int(time.time() * 1_000_000)  # microsecond resolution — practically zero collision risk between gateway restarts
 
@@ -557,10 +571,33 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def _handle_action_result(self, payload: dict) -> None:
-        """Forward action_result events to transform_tool_result hooks."""
+        """Forward action_result events to transform_tool_result hooks.
+
+        Also record the result in the NarrateGateTracker so the next
+        assistant message can be checked for past-tense narration that
+        contradicts the verified tool outcome. The actual mismatch
+        detection is done at the LLM loop level (see
+        daemoncraft_narrategate.NarrateGateTracker.detect_narrate_mismatch);
+        here we just capture the result.
+        """
         import json as _json
         result_str = _json.dumps(payload)
         await self.invoke_hook("transform_tool_result", tool_name="mc_action_result", result=result_str)
+
+        # NarrateGateTracker: capture this tool result for future
+        # narration comparison. Categorize by action so the detector
+        # can match it against the appropriate past-tense pattern.
+        action_name = str((payload or {}).get("action") or "")
+        action_category = _narrate_action_category(action_name)
+        try:
+            self._narrate_gate_tracker.record_tool_result(
+                tool_name=str((payload or {}).get("tool") or action_name or "mc_action"),
+                result_str=result_str,
+                action_category=action_category,
+                now=time.time(),
+            )
+        except Exception as _ng_err:
+            logging.debug(f"NarrateGateTracker record failed: {_ng_err}")
 
     async def _handle_heartbeat_context(self, data: dict) -> None:
         """Process heartbeat_context with two-level event architecture.
