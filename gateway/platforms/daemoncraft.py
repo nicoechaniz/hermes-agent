@@ -575,6 +575,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         assistant message can be checked for past-tense narration that
         contradicts the verified tool outcome. Tied to t_a2c3facb:
         consumes the typed outcome/category fields directly (not strings).
+
+        t_f8481d90: ALSO augment the narration verification with a
+        synthetic world state injection that includes a visual pre-process
+        of the area affected by the action. This is the "soft discard"
+        — we don't strip the assistant text from history, but we give
+        the LLM a strong anchor (the visual) for re-narrating correctly
+        on the next turn.
         """
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         action_name = str(data.get("action") or "")
@@ -594,6 +601,8 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # NarrateGateTracker: capture this tool result with the typed fields.
         # No substring matching, no heuristic classification. The server
         # emits the outcome and category at the top level.
+        pos_before = None
+        pos_after = None
         try:
             pos_before = (
                 (position_before.get("x"), position_before.get("y"), position_before.get("z"))
@@ -613,6 +622,126 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             )
         except Exception as _ng_err:
             logging.debug(f"NarrateGateTracker record failed: {_ng_err}")
+
+        # t_f8481d90: build the visual-augmented narrate reminder.
+        # If the last assistant message had past-tense narration that
+        # contradicts this tool result, inject a synthetic world state
+        # with the visual pre-process of the affected area. Cap at 2
+        # injections per turn to avoid infinite loops.
+        try:
+            last_assistant_text = await self._get_last_assistant_text()
+            if last_assistant_text:
+                mismatch = self._narrate_gate_tracker.detect_narrate_mismatch(
+                    last_assistant_text, now=time.time()
+                )
+                if mismatch and self._narrate_gate_tracker.should_inject_reminder(mismatch, now=time.time()):
+                    await self._inject_narrate_mismatch_visual(
+                        mismatch=mismatch,
+                        action_name=action_name,
+                        category=category,
+                        target=target,
+                        position_after=position_after,
+                        last_assistant_text=last_assistant_text,
+                    )
+        except Exception as _v_err:
+            logging.debug(f"Narrate visual inject failed: {_v_err}")
+
+    async def _get_last_assistant_text(self) -> str:
+        """Return the most recent assistant text from the world session.
+
+        Used by t_f8481d90 (discard narrate) to compare narration
+        against the verified tool result.
+        """
+        if not self._session_store:
+            return ""
+        session_id = self._get_world_session_id()
+        if not session_id:
+            return ""
+        try:
+            transcript = self._session_store.load_transcript(session_id)
+            for msg in reversed(transcript):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+                        return "\n".join(text_parts).strip()
+                    return str(content or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    async def _inject_narrate_mismatch_visual(
+        self,
+        mismatch,
+        action_name: str,
+        category: str,
+        target,
+        position_after,
+        last_assistant_text: str,
+    ) -> None:
+        """Inject a synthetic world state that includes a visual pre-process
+        of the area affected by the action, plus an explicit reminder.
+
+        Tied to t_f8481d90 (discard narrate + visual inject). This is
+        the "soft discard": we don't strip the assistant text from
+        history, but we give the LLM a strong anchor (the visual) for
+        re-narrating correctly on the next turn. The reminder text
+        names the specific narration that contradicted the tool result
+        and tells the LLM to anchor to the visual.
+        """
+        # Fetch a visual of the affected area. For movement, it's the
+        # bot's current position. For build, it's the target cell. For
+        # mine, the target cell.
+        visual_block = ""
+        try:
+            if (position_after and isinstance(position_after, dict)
+                    and self._session is not None):
+                bx, by, bz = (
+                    int(position_after.get("x", 0)),
+                    int(position_after.get("y", 0)),
+                    int(position_after.get("z", 0)),
+                )
+                radius = 4
+                url = (
+                    f"{self._bot_api_url}/blocks"
+                    f"?x1={bx-radius}&y1={by-radius}&z1={bz-radius}"
+                    f"&x2={bx+radius}&y2={by+radius}&z2={bz+radius}"
+                    f"&format=visual"
+                )
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        body = await resp.json()
+                        visual_block = (body.get("data") or {}).get("text", "") or ""
+                        if len(visual_block) > 2500:
+                            visual_block = visual_block[:2500] + "\n...[truncated]"
+        except Exception as _v_err:
+            logging.debug(f"Failed to fetch visual for narrate mismatch: {_v_err}")
+            visual_block = "(visual fetch failed)"
+
+        reminder_text = (
+            f"[Verify-Before-Narrate] Your last narration said "
+            f"'{mismatch.snippet}' but the most recent tool result "
+            f"({action_name}) had outcome '{mismatch.actual_outcome}'. "
+            f"The narration contradicts the verified tool result. "
+            f"Below is the visual pre-process of the affected area "
+            f"(radius 4 around the bot). Anchor your next narration "
+            f"to this visual, not to your earlier intention. The visual "
+            f"is the ground truth."
+        )
+        data = {
+            "kind": "narrate_mismatch_visual",
+            "reminder": reminder_text,
+            "tool_name": action_name,
+            "category": category,
+            "outcome": mismatch.actual_outcome,
+            "target": target,
+            "position_after": position_after,
+            "visual": visual_block,
+            "snippet": mismatch.snippet,
+            "mismatch_kind": mismatch.kind,
+            "ts": time.time(),
+        }
+        await self._inject_synthetic_world_state(data)
 
     async def _handle_heartbeat_context(self, data: dict) -> None:
         """Process heartbeat_context with two-level event architecture.
