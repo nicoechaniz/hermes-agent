@@ -1094,6 +1094,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # The check below is async because we need a HTTP roundtrip
         # to /controller/mode (the mode is in the bot server's memory
         # and may have changed since connect()). Cached for 5s.
+        # FAIL-SAFE: if the fetch fails, assume lab mode. This is
+        # because the alternative (stale "autonomous" cache) caused
+        # a 52-API-call loop on 2026-06-02. Better to miss a wake-up
+        # in autonomous mode than to fire one in lab mode.
         now = time.time()
         if (now - getattr(self, "_last_mode_check", 0)) > 5.0:
             self._last_mode_check = now
@@ -1105,9 +1109,18 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                     if resp.status == 200:
                         md = await resp.json()
                         if md.get("ok"):
-                            self._controller_mode_cache = md.get("data", {}).get("mode", "autonomous")
+                            actual = md.get("data", {}).get("mode", "lab")
+                            self._controller_mode_cache = actual
+                        else:
+                            # ok=false means error, assume lab
+                            self._controller_mode_cache = "lab"
+                    else:
+                        # HTTP error, assume lab
+                        self._controller_mode_cache = "lab"
             except Exception:
-                pass
+                # Connection error, timeout, anything — assume lab
+                # (safer than assuming autonomous)
+                self._controller_mode_cache = "lab"
         if getattr(self, "_controller_mode_cache", None) == "lab":
             return "context"
 
