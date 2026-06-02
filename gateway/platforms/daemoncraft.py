@@ -30,8 +30,6 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.daemoncraft_antiloop import StuckPivotTracker
 from gateway.platforms.daemoncraft_narrategate import (
     NarrateGateTracker,
-    _classify_outcome,
-    _narrate_action_category,
 )
 
 # ---------------------------------------------------------------------------
@@ -575,25 +573,42 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
         Also record the result in the NarrateGateTracker so the next
         assistant message can be checked for past-tense narration that
-        contradicts the verified tool outcome. The actual mismatch
-        detection is done at the LLM loop level (see
-        daemoncraft_narrategate.NarrateGateTracker.detect_narrate_mismatch);
-        here we just capture the result.
+        contradicts the verified tool outcome. Tied to t_a2c3facb:
+        consumes the typed outcome/category fields directly (not strings).
         """
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        action_name = str(data.get("action") or "")
+        # TYPED fields from the server (see agents/bot/lib/typed_result.js).
+        # No string matching on result blobs.
+        outcome = str(data.get("outcome") or "unknown")
+        category = str(data.get("category") or "other")
+        target = data.get("target")
+        position_before = data.get("position_before")
+        position_after = data.get("position_after")
+        # Forward the original payload to the transform_tool_result hook
+        # for any consumer that wants the full record (judge, ok, ts, etc.)
         import json as _json
-        result_str = _json.dumps(payload)
+        result_str = _json.dumps(data)
         await self.invoke_hook("transform_tool_result", tool_name="mc_action_result", result=result_str)
 
-        # NarrateGateTracker: capture this tool result for future
-        # narration comparison. Categorize by action so the detector
-        # can match it against the appropriate past-tense pattern.
-        action_name = str((payload or {}).get("action") or "")
-        action_category = _narrate_action_category(action_name)
+        # NarrateGateTracker: capture this tool result with the typed fields.
+        # No substring matching, no heuristic classification. The server
+        # emits the outcome and category at the top level.
         try:
+            pos_before = (
+                (position_before.get("x"), position_before.get("y"), position_before.get("z"))
+                if isinstance(position_before, dict) else None
+            )
+            pos_after = (
+                (position_after.get("x"), position_after.get("y"), position_after.get("z"))
+                if isinstance(position_after, dict) else None
+            )
             self._narrate_gate_tracker.record_tool_result(
-                tool_name=str((payload or {}).get("tool") or action_name or "mc_action"),
-                result_str=result_str,
-                action_category=action_category,
+                tool_name=action_name or "mc_action",
+                outcome=outcome,
+                action_category=category,
+                position_before=pos_before,
+                position_after=pos_after,
                 now=time.time(),
             )
         except Exception as _ng_err:

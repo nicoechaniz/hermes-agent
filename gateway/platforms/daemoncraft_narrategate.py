@@ -99,24 +99,28 @@ PAST_TENSE_ARRIVED = re.compile(
     re.IGNORECASE,
 )
 
-# Categorical outcomes from server.js judgeAction + tool wrappers
-OUTCOME_DID_MOVE = {"done"}  # movement that succeeded
-OUTCOME_DID_NOT_MOVE = {"cancelled", "stuck", "no_progress", "preempted", "error", "no_movement"}
-OUTCOME_DID_PLACE = {"done", "success"}  # block placed
-OUTCOME_DID_NOT_PLACE = {
-    "failed", "no_support", "no_adjacent", "no_progress", "stuck", "cancelled", "error",
-}
+# Categorical outcomes from server.js typed_result schema (canonical).
+# These are the typed outcome strings the server emits. See
+# agents/bot/lib/typed_result.js for the canonical list.
+# Categorized as: did the action actually accomplish its goal, or did it fail/stall?
+MOVEMENT_SUCCESS_OUTCOMES = {"success", "displaced"}  # bot moved (success) or fell (displaced, still moved)
+MOVEMENT_FAILURE_OUTCOMES = {"cancelled", "stuck", "no_progress", "preempted", "error", "unknown"}
+BUILD_SUCCESS_OUTCOMES = {"success", "displaced"}      # block placed (displaced means fell after, but place succeeded)
+BUILD_FAILURE_OUTCOMES = {"cancelled", "stuck", "no_progress", "preempted", "error", "unknown"}
 
 
 @dataclass
 class ToolResultRecord:
-    """Compact record of the most recent tool result."""
+    """Compact record of the most recent tool result.
+
+    Built from the server's typed_result fields. outcome and category
+    are typed enums (not string-matched from a result blob).
+    """
     tool_name: str
-    claimed_outcome: str  # "done" | "cancelled" | "stuck" | "no_progress" | "error" | ...
-    action_category: str   # "movement" | "build" | "mine" | "interact" | "other"
+    claimed_outcome: str   # "success" | "no_progress" | "cancelled" | "stuck" | "preempted" | "error" | "displaced" | "unknown"
+    action_category: str   # "movement" | "build" | "mine" | "interact" | "craft" | "other"
     position_before: Optional[tuple] = None  # (x, y, z) before the tool
     position_after: Optional[tuple] = None   # (x, y, z) after the tool
-    text_preview: str = ""
     timestamp: float = 0.0
 
 
@@ -164,21 +168,31 @@ class NarrateGateTracker:
         self,
         *,
         tool_name: str,
-        result_str: str,
+        outcome: str,
         action_category: str = "other",
         position_before: Optional[tuple] = None,
         position_after: Optional[tuple] = None,
         now: float = 0.0,
     ) -> None:
-        """Capture a tool result for future narration comparison."""
-        outcome = _classify_outcome(tool_name, result_str, action_category)
+        """Capture a tool result for future narration comparison.
+
+        outcome and action_category are TYPED fields (canonical enums
+        from agents/bot/lib/typed_result.js), not strings to parse. The
+        server emits these at the top level of every tool result. See
+        lib/typed_result.js for the canonical enum values.
+        """
+        # Validate that the outcome is a known enum value. If the server
+        # emits an unknown outcome, treat as "unknown" — never crash.
+        if outcome not in _VALID_OUTCOMES:
+            outcome = "unknown"
+        if action_category not in _VALID_CATEGORIES:
+            action_category = "other"
         self.last_tool = ToolResultRecord(
             tool_name=tool_name,
             claimed_outcome=outcome,
             action_category=action_category,
             position_before=position_before,
             position_after=position_after,
-            text_preview=result_str[:200],
             timestamp=now or time.time(),
         )
 
@@ -224,7 +238,7 @@ class NarrateGateTracker:
 
         # Check moved-claim against move-outcome
         if ac == "movement":
-            if tool.claimed_outcome in OUTCOME_DID_NOT_MOVE:
+            if tool.claimed_outcome in MOVEMENT_FAILURE_OUTCOMES:
                 m = PAST_TENSE_MOVED.search(text)
                 if m:
                     return NarrateMismatch(
@@ -248,7 +262,7 @@ class NarrateGateTracker:
 
         # Check placed-claim against place-outcome
         if ac == "build":
-            if tool.claimed_outcome in OUTCOME_DID_NOT_PLACE:
+            if tool.claimed_outcome in BUILD_FAILURE_OUTCOMES:
                 m = PAST_TENSE_PLACED.search(text)
                 if m:
                     return NarrateMismatch(
@@ -279,38 +293,30 @@ class NarrateGateTracker:
         self.last_body = None
 
 
-def _classify_outcome(tool_name: str, result_str: str, action_category: str) -> str:
-    """Heuristic outcome classification from tool result string."""
-    s = (result_str or "").lower()
-    # Explicit error / failure tokens
-    for token in ("cancelled", "interrupted"):
-        if token in s:
-            return "cancelled"
-    for token in ("no_progress", "no progress", "no_adjacent", "no adjacent", "no_support", "no support"):
-        if token in s:
-            return "no_progress"
-    for token in ("stuck", "timed out", "timeout", "preempted"):
-        if token in s:
-            return "stuck"
-    for token in ("error", "exception", "failed", "refusing"):
-        if token in s:
-            return "error"
-    # Positive tokens (order matters: check stronger first)
-    for token in ('"ok":true', '"ok": true'):
-        if token in s:
-            return "done"
-    for token in ("placed at", "block placed"):
-        if token in s:
-            return "done"
-    # "now at" appears in BOTH success ("Walked toward X, now at Y" — actually walked)
-    # and stuck ("Did not reach X, now at Y still"). We can't disambiguate without
-    # more context, so leave it as "unknown" and let the explicit error/cancelled
-    # tokens win. "now at" alone doesn't mean success.
-    for token in ("completed", "done", "success"):
-        if token in s:
-            return "done"
-    # Default: unknown
-    return "unknown"
+def _classify_outcome_legacy() -> None:
+    """Legacy outcome classifier. REMOVED in t_a2c3facb refactor.
+
+    The server now emits a typed `outcome` field directly (see
+    agents/bot/lib/typed_result.js). Consumers consume the typed field
+    directly via record_tool_result(outcome=...). No string matching.
+
+    This stub remains as a marker — if you see code calling this, it
+    predates the typed_result refactor and should be migrated.
+    """
+    raise NotImplementedError(
+        "Legacy _classify_outcome removed. Use the typed 'outcome' field "
+        "from agents/bot/lib/typed_result.js. See t_a2c3facb in kanban."
+    )
+
+
+# Canonical outcome + category sets (mirror agents/bot/lib/typed_result.js).
+# Validated at record_tool_result() time. Unknown values are coerced to
+# "unknown" / "other" respectively.
+_VALID_OUTCOMES = {
+    "success", "no_progress", "cancelled", "preempted",
+    "stuck", "error", "displaced", "unknown",
+}
+_VALID_CATEGORIES = {"movement", "build", "mine", "interact", "craft", "other"}
 
 
 def _snippet(text: str, center: int, width: int = 80) -> str:
@@ -320,29 +326,48 @@ def _snippet(text: str, center: int, width: int = 80) -> str:
     return text[start:end].replace("\n", " ").strip()
 
 
+# Action-to-category mapping mirrors agents/bot/lib/typed_result.js. Kept
+# locally so this module can compute the category from the raw action
+# name without a server round-trip. The two definitions must stay in
+# sync; if you change one, change both.
 _MOVEMENT_ACTIONS_FOR_NARRATE = frozenset({
     "goto", "gotonear", "goto_near", "follow", "flee", "bg_goto",
     "pathfind", "stop", "come", "navigate",
 })
-
 _BUILD_ACTIONS_FOR_NARRATE = frozenset({
     "place", "fill", "build", "interact",
+})
+_MINE_ACTIONS_FOR_NARRATE = frozenset({
+    "dig", "mine", "collect", "tunnel", "spiral",
+})
+_INTERACT_ACTIONS_FOR_NARRATE = frozenset({
+    "chat", "equip", "use", "eat", "drink", "sleep", "attack", "shoot",
+    "sneak", "shield", "toss", "pickup", "equip_item",
+})
+_CRAFT_ACTIONS_FOR_NARRATE = frozenset({
+    "craft", "smelt", "brew", "furnace_smelt", "view_craftable",
 })
 
 
 def _narrate_action_category(action: str) -> str:
     """Categorize a tool action for the NarrateGateTracker.
 
-    Returns one of: "movement", "build", "mine", "other".
-    Used by detect_narrate_mismatch to pick the right past-tense pattern.
+    Returns one of the typed categories: "movement", "build", "mine",
+    "interact", "craft", "other". Used by detect_narrate_mismatch to
+    pick the right past-tense pattern. Mirrors
+    lib/typed_result.js::categoryForAction — keep in sync.
     """
     a = (action or "").lower().split("@")[0].strip()
     if not a:
         return "other"
     if a in _MOVEMENT_ACTIONS_FOR_NARRATE or any(x in a for x in ("goto", "follow", "flee", "path", "navigat")):
         return "movement"
-    if a in ("dig", "mine", "collect", "tunnel", "spiral"):
+    if a in _MINE_ACTIONS_FOR_NARRATE:
         return "mine"
     if a in _BUILD_ACTIONS_FOR_NARRATE:
         return "build"
+    if a in _INTERACT_ACTIONS_FOR_NARRATE:
+        return "interact"
+    if a in _CRAFT_ACTIONS_FOR_NARRATE:
+        return "craft"
     return "other"
