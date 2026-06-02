@@ -250,6 +250,11 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # classifier can short-circuit without an HTTP roundtrip on
         # every heartbeat. Updated whenever the user toggles mode
         # via /controller/mode.
+        # Set initial value to 0.0 so the FIRST heartbeat forces a
+        # refresh (the 5s threshold check would otherwise trust the
+        # stale "autonomous" default for up to 5s after a bot server
+        # that's slow to start).
+        self._last_mode_check = 0.0
         self._controller_mode_cache = "autonomous"  # safe default
         try:
             async with self._session.get(
@@ -260,8 +265,14 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                     data = await resp.json()
                     if data.get("ok"):
                         self._controller_mode_cache = data.get("data", {}).get("mode", "autonomous")
-        except Exception:
-            pass
+                        logger.info("[DaemonCraft] controller_mode at connect: %s", self._controller_mode_cache)
+                else:
+                    logger.warning("[DaemonCraft] controller_mode fetch returned status %d at connect; "
+                                   "defaulting to '%s' (will refresh on first heartbeat)",
+                                   resp.status, self._controller_mode_cache)
+        except Exception as _ce:
+            logger.warning("[DaemonCraft] controller_mode fetch failed at connect: %s; defaulting to '%s' "
+                           "(will refresh on first heartbeat)", _ce, self._controller_mode_cache)
 
         n = int(os.getenv("MC_CYCLE_N", "0"))
         window = int(os.getenv("MC_CYCLE_WINDOW", "20"))
