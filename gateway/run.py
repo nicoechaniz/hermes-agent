@@ -4141,12 +4141,15 @@ class GatewayRunner:
         # Lab mode = manual control only. The user will trigger the
         # L4 by sending a chat message; the resume_pending session
         # is preserved and fires on that real user input.
+        # FAIL-SAFE: if we can't determine the mode (e.g. bot server
+        # slow to start), ASSUME lab mode (skip auto-resume). The
+        # alternative — assuming autonomous — caused a 52-API-call
+        # loop on 2026-06-02 when the bot server wasn't ready and
+        # the cache defaulted to "autonomous" silently.
         daemoncraft_adapter = self.adapters.get(Platform.DAEMONCRAFT)
         try:
-            lab_mode = False
+            lab_mode = True  # fail-safe default
             if daemoncraft_adapter and hasattr(daemoncraft_adapter, "_is_lab_mode"):
-                # We need a sync check here. The adapter has an async
-                # _is_lab_mode; we do a quick HTTP probe instead.
                 bot_url = getattr(daemoncraft_adapter, "_bot_api_url", None)
                 if bot_url:
                     try:
@@ -4156,26 +4159,30 @@ class GatewayRunner:
                             timeout=1.0,
                         ) as resp:
                             md = json.loads(resp.read())
-                            lab_mode = md.get("ok") and md.get("data", {}).get("mode") == "lab"
-                    except Exception:
-                        pass
+                            actual_mode = md.get("data", {}).get("mode", "lab") if md.get("ok") else "lab"
+                            lab_mode = (actual_mode == "lab")
+                    except Exception as _conn_err:
+                        logger.warning(
+                            "[gateway] controller_mode fetch failed during auto-resume: %s. "
+                            "FAIL-SAFE: assuming lab mode (skipping auto-resume of %d session(s)).",
+                            _conn_err, len(candidates),
+                        )
+                        lab_mode = True
             if lab_mode:
                 logger.info(
-                    "[gateway] Lab mode active: SKIPPING auto-resume of %d session(s). "
+                    "[gateway] Lab mode active (or undetermined): SKIPPING auto-resume of %d session(s). "
                     "They will fire on next real user turn.",
                     len(candidates),
                 )
-                # Clear the resume_pending flag so they don't fire on
-                # the next gateway startup either, until the user
-                # explicitly says so.
                 for entry in candidates:
                     entry.resume_pending = False
                 self.session_store._save_locked()  # noqa: SLF001
                 return 0
         except Exception as _lab_check_exc:
-            logger.debug("lab mode check failed during auto-resume: %s", _lab_check_exc)
-            # If we can't determine, default to NOT auto-resuming
-            # (safer than auto-resuming in potentially-lab mode)
+            logger.warning("lab mode check failed during auto-resume: %s; failing safe to lab mode (skip)", _lab_check_exc)
+            for entry in candidates:
+                entry.resume_pending = False
+            self.session_store._save_locked()  # noqa: SLF001
             return 0
 
         now = datetime.now()
