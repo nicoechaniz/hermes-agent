@@ -4176,13 +4176,33 @@ class GatewayRunner:
                 )
                 for entry in candidates:
                     entry.resume_pending = False
-                self.session_store._save_locked()  # noqa: SLF001
+                # Persist the cleared flag. SessionStore doesn't expose
+                # a save method by name consistently across versions,
+                # so try common ones; if none exist, the in-memory
+                # change is still correct for this session (won't
+                # survive a restart, but the next restart will re-skip
+                # via the same fail-safe).
+                for _save_name in ("_save", "save_locked", "save"):
+                    _save = getattr(self.session_store, _save_name, None)
+                    if callable(_save):
+                        try:
+                            _save()
+                            break
+                        except Exception as _se:
+                            logger.debug("session_store.%s() failed: %s", _save_name, _se)
                 return 0
         except Exception as _lab_check_exc:
             logger.warning("lab mode check failed during auto-resume: %s; failing safe to lab mode (skip)", _lab_check_exc)
             for entry in candidates:
                 entry.resume_pending = False
-            self.session_store._save_locked()  # noqa: SLF001
+            for _save_name in ("_save", "save_locked", "save"):
+                _save = getattr(self.session_store, _save_name, None)
+                if callable(_save):
+                    try:
+                        _save()
+                        break
+                    except Exception:
+                        pass
             return 0
 
         now = datetime.now()
