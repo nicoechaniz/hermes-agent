@@ -281,6 +281,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
