@@ -143,7 +143,7 @@ def _kill_with_escalation(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         pass
     try:
-        os.kill(proc.pid, signal.SIGKILL)
+        os.kill(proc.pid, signal.SIGKILL)  # windows-footgun: ok  (POSIX kill path; sibling SIGTERM above is likewise os.kill)
     except ProcessLookupError:
         return
     try:
@@ -177,7 +177,7 @@ def _child_main(spec_path: str) -> int:
     external watchers) for the *successful* completion path; on timeout
     or kill the parent overwrites status itself.
     """
-    spec = json.loads(Path(spec_path).read_text())
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     job_dir = Path(spec["job_dir"])
     job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -277,7 +277,7 @@ def main(spec_path: str) -> int:
     Returns 0 on clean child exit, 1 on timeout / stale / failure, 2 if
     another instance of the same job already holds the lock.
     """
-    spec = json.loads(Path(spec_path).read_text())
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     job_dir = Path(spec["job_dir"])
     job_dir.mkdir(parents=True, exist_ok=True)
 
