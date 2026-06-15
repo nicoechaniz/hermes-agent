@@ -399,7 +399,6 @@ def _call_delegate_task(
         context=context,
         toolsets=toolsets or ["terminal", "file"],
         parent_agent=parent_agent,
-        inherit_profile=True,
     )
     try:
         return json.loads(raw)
@@ -423,7 +422,6 @@ def _call_delegate_task_batch(
         tasks=tasks,
         toolsets=toolsets or ["terminal", "file"],
         parent_agent=parent_agent,
-        inherit_profile=True,
     )
     try:
         return json.loads(raw)
@@ -1012,7 +1010,7 @@ class ResearchSupervisor:
             )
             goal = (
                 f"You are a Hermes research worker (branch {i}/{len(attempts)}). "
-                f"Read program.md in {wd} and run the experiment. "
+                f"Read task_brief.md in {wd} and run the experiment. "
                 f"Report your result as:\n"
                 f"METRIC: {spec.metric_key}=<value> STATUS: improved|regressed|neutral "
                 f"NOTES: <one line summary>"
@@ -1117,6 +1115,7 @@ class ResearchSupervisor:
                 tokens_in=_tokens_in,
                 tokens_out=_tokens_out,
                 cost_usd=_cost_usd,
+                working_dir=str(wd),
             )
 
             if kept:
@@ -1234,7 +1233,14 @@ class ResearchSupervisor:
         Workers may modify attempt.py / attempt.md beyond the seed string passed in.
         This ensures rollback restores the real artifact, not the seed text.
         """
-        round_dir = run_dir / f"round-{result.run_id}-iter{result.iteration}"
+        # Prefer the worker's real dir (fan-out branches carry a -branch{i}
+        # suffix that can't be rebuilt from run_id+iteration); fall back to the
+        # canonical path for sequential rounds / legacy results.
+        round_dir = (
+            Path(result.working_dir)
+            if result.working_dir
+            else run_dir / f"round-{result.run_id}-iter{result.iteration}"
+        )
         attempt_filename = _ATTEMPT_FILENAME.get(spec.task_type, "attempt.md")
         artifact_file = round_dir / attempt_filename
         try:
@@ -1437,7 +1443,13 @@ class ResearchSupervisor:
         snapshots_dir = checkpoint_dir / "snapshots"
         snapshots_dir.mkdir(parents=True, exist_ok=True)
 
-        round_dir = run_dir / f"round-{result.run_id}-iter{iteration}"
+        # Use the worker's real dir so fan-out branch artifacts are captured;
+        # fall back to the canonical path for sequential / legacy results.
+        round_dir = (
+            Path(result.working_dir)
+            if result.working_dir
+            else run_dir / f"round-{result.run_id}-iter{iteration}"
+        )
         files: list[dict[str, str]] = []
         if round_dir.exists():
             for f in sorted(round_dir.rglob("*")):
