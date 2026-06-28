@@ -1840,6 +1840,7 @@ def _model_flow_kimi(config, current_model=""):
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
+        resolve_kimi_coding_runtime_credentials,
     )
     from hermes_cli.config import (
         get_env_value,
@@ -1854,22 +1855,42 @@ def _model_flow_kimi(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Step 1: Check / prompt for API key
+    # Step 1: Check for API key OR Kimi CLI OAuth. Kimi Coding Plan can be
+    # selected from the model picker with a `kimi login` token in ~/.kimi; do
+    # not force an API-key prompt in that case.
     existing_key = ""
     for ev in pconfig.api_key_env_vars:
         existing_key = get_env_value(ev) or os.getenv(ev, "")
         if existing_key:
             break
 
-    existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
-    )
-    if abort:
-        return
+    oauth_base = ""
+    oauth_source = ""
+    if not existing_key:
+        try:
+            oauth = resolve_kimi_coding_runtime_credentials(
+                allow_api_key_fallback=False,
+            )
+            existing_key = str(oauth.get("api_key", "") or "").strip()
+            oauth_base = str(oauth.get("base_url", "") or "").strip().rstrip("/")
+            oauth_source = str(oauth.get("source", "") or "").strip()
+        except Exception:
+            existing_key = ""
+
+    if not existing_key:
+        existing_key, abort = _prompt_api_key(
+            pconfig, existing_key, provider_id=provider_id
+        )
+        if abort:
+            return
 
     # Step 2: Auto-detect endpoint from key prefix
-    is_coding_plan = existing_key.startswith("sk-kimi-")
-    if is_coding_plan:
+    is_coding_plan = bool(oauth_base) or existing_key.startswith("sk-kimi-")
+    if oauth_base:
+        effective_base = oauth_base
+        suffix = f" ({oauth_source})" if oauth_source else ""
+        print(f"  Detected Kimi CLI OAuth{suffix} → {effective_base}")
+    elif is_coding_plan:
         effective_base = KIMI_CODE_BASE_URL
         print(f"  Detected Kimi Coding Plan key → {effective_base}")
     else:
