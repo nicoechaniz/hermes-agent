@@ -18,7 +18,7 @@ def test_mc_bit_handler_is_sync_and_formats_response(monkeypatch):
             return {
                 "ok": True,
                 "data": {
-                    "format": "surface",
+                    "format": "visual",
                     "text": "GG\nTT\n",
                     "count": 4,
                     "elapsed_ms": 2,
@@ -41,14 +41,14 @@ def test_mc_bit_handler_is_sync_and_formats_response(monkeypatch):
         "x2": 4,
         "y2": 5,
         "z2": 6,
-        "format": "surface",
+        "format": "visual",
     })
 
     assert isinstance(result, str)
-    assert result == "mBit surface (4 blocks, 2ms):\nGG\nTT\n"
+    assert result == "mBit visual (4 blocks, 2ms):\nGG\nTT\n"
     assert captured == {
         "url": "http://bot.test:3003/blocks",
-        "params": {"x1": 1, "y1": 2, "z1": 3, "x2": 4, "y2": 5, "z2": 6, "format": "surface"},
+        "params": {"x1": 1, "y1": 2, "z1": 3, "x2": 4, "y2": 5, "z2": 6, "format": "visual"},
         "timeout": 10.0,
     }
 
@@ -76,4 +76,4 @@ def test_mc_bit_invalid_format_returns_error():
     })
 
     assert "unsupported format" in result
-    assert "binary" in result
+    assert "visual" in result

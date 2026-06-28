@@ -4,6 +4,11 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+
+def _intent_calls(calls):
+    """Filter out fire-and-forget /task/cancel calls from embodied service /intent calls."""
+    return [body for body in calls if body and body.get("intent")]
+
 import pytest
 
 import httpx
@@ -190,7 +195,7 @@ def test_policy_scope_filter_blocks_joke(monkeypatch):
     with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
         out = _handler({"intent": "Contame un chiste corto", "policy_mode": "auto"})
 
-    assert len(calls) == 0
+    assert len(_intent_calls(calls)) == 0
     payload = json.loads(out)
     assert payload["ok"] is True
     assert payload["outcome"] == "policy_handled_upstream"
@@ -211,7 +216,7 @@ def test_policy_ambiguity_blocks_vague(monkeypatch):
     with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
         out = _handler({"intent": "Hacé algo entretenido", "policy_mode": "auto"})
 
-    assert len(calls) == 0
+    assert len(_intent_calls(calls)) == 0
     payload = json.loads(out)
     assert payload["ok"] is True
     assert payload["outcome"] == "policy_handled_upstream"
@@ -241,11 +246,12 @@ def test_policy_decomposes_and_normalizes(monkeypatch):
             "policy_mode": "auto",
         })
 
-    assert len(calls) == 2
+    intent_calls = _intent_calls(calls)
+    assert len(intent_calls) == 2
     # First sub-intent should be normalized English imperative
-    assert calls[0]["intent"].startswith("Mine")
+    assert intent_calls[0]["intent"].startswith("Mine")
     # Second sub-intent should also be normalized
-    assert calls[1]["intent"].startswith("Craft")
+    assert intent_calls[1]["intent"].startswith("Craft")
 
     payload = json.loads(out)
     assert payload["ok"] is True
@@ -271,8 +277,9 @@ def test_policy_narrows_tools(monkeypatch):
     with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
         out = _handler({"intent": "Equip torch", "policy_mode": "auto"})
 
-    assert len(calls) == 1
-    narrowed = calls[0].get("allowed_tools", [])
+    intent_calls = _intent_calls(calls)
+    assert len(intent_calls) == 1
+    narrowed = intent_calls[0].get("allowed_tools", [])
     assert "equip_item" in narrowed
     assert "mine_block" not in narrowed
 
@@ -288,6 +295,11 @@ def test_policy_threads_previous_error(monkeypatch):
     call_idx = 0
     def fake_post(url, json=None, timeout=None):
         nonlocal call_idx
+        if not (json and json.get("intent")):
+            resp = MagicMock()
+            resp.json.return_value = {"ok": True}
+            resp.status_code = 200
+            return resp
         call_idx += 1
         resp = MagicMock()
         if call_idx == 1:

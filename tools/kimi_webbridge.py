@@ -85,6 +85,7 @@ def _validate_screenshot_path(output_path: Optional[str]) -> Path:
     path = Path(output_path).resolve()
     allowed_roots = [
         Path("/tmp").resolve(),
+        Path("/var/tmp").resolve(),
         Path.home().resolve(),
     ]
     if not any(str(path).startswith(str(root)) for root in allowed_roots):
