@@ -1632,6 +1632,7 @@ DEFAULT_CONFIG = {
         # starts delegating, nudging the user toward the live spawn-tree
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
+        "ctrl_c_priority": "interrupt_agent",  # "interrupt_agent" | "clear_input"
         "bell_on_complete": False,
         "show_reasoning": False,
         # When reasoning display is on, the post-response "Reasoning" recap box

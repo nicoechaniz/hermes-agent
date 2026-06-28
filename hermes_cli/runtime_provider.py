@@ -110,6 +110,12 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     path = urlparse(normalized).path.rstrip("/")
     if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return "anthropic_messages"
+    if hostname == "api.kimi.com" and normalized.endswith("/coding/v1"):
+        # Kimi Coding Plan exposes an OpenAI-compatible surface at
+        # /coding/v1/chat/completions. Older fork configs stored this URL
+        # directly; keep routing those sessions through chat_completions so
+        # the OpenAI SDK sends Bearer auth and default_headers are applied.
+        return "chat_completions"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
@@ -170,6 +176,21 @@ def _host_derived_api_key(base_url: str) -> str:
         return ""
     env_name = f"{sanitized}_API_KEY"
     return (_getenv(env_name, "") or "").strip()
+
+
+def _try_kimi_oauth_credentials() -> Optional[Dict[str, Any]]:
+    """Return Kimi CLI OAuth credentials when available, otherwise None."""
+    try:
+        from hermes_cli.auth import resolve_kimi_coding_runtime_credentials
+
+        creds = resolve_kimi_coding_runtime_credentials()
+    except Exception:
+        return None
+    if not isinstance(creds, dict):
+        return None
+    if not str(creds.get("api_key") or "").strip():
+        return None
+    return creds
 
 
 def _auto_detect_local_model(base_url: str) -> str:

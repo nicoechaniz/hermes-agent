@@ -5661,6 +5661,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         re-touches another platform's in-flight recoveries.  Sessions whose
         agent is already running are skipped regardless, so a session
         scheduled at startup is never resumed a second time.
+
+        When a DaemonCraft adapter is active and reports lab mode,
+        auto-resume is skipped fail-safe so human observation stays
+        dormant until a real operator/user turn arrives.
         """
         window = _auto_continue_freshness_window()
         try:
@@ -5676,6 +5680,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
+            return 0
+
+        # Tied to t_97b030a6 followup: skip auto-resume in lab mode.
+        # Lab mode = manual control only. The user will trigger the
+        # L4 by sending a chat message; the resume_pending session
+        # is preserved and fires on that real user input.
+        # FAIL-SAFE: if we can't determine the mode (e.g. bot server
+        # slow to start), ASSUME lab mode (skip auto-resume). The
+        # alternative — assuming autonomous — caused a 52-API-call
+        # loop on 2026-06-02 when the bot server wasn't ready and
+        # the cache defaulted to "autonomous" silently.
+        daemoncraft_adapter = self.adapters.get(Platform.DAEMONCRAFT)
+        try:
+            lab_mode = True  # fail-safe default
+            if daemoncraft_adapter and hasattr(daemoncraft_adapter, "_is_lab_mode"):
+                bot_url = getattr(daemoncraft_adapter, "_bot_api_url", None)
+                if bot_url:
+                    try:
+                        import urllib.request
+                        with urllib.request.urlopen(
+                            f"{bot_url}/controller/mode",
+                            timeout=1.0,
+                        ) as resp:
+                            md = json.loads(resp.read())
+                            actual_mode = md.get("data", {}).get("mode", "lab") if md.get("ok") else "lab"
+                            lab_mode = (actual_mode == "lab")
+                    except Exception as _conn_err:
+                        logger.warning(
+                            "[gateway] controller_mode fetch failed during auto-resume: %s. "
+                            "FAIL-SAFE: assuming lab mode (skipping auto-resume of %d session(s)).",
+                            _conn_err, len(candidates),
+                        )
+                        lab_mode = True
+            if lab_mode:
+                logger.info(
+                    "[gateway] Lab mode active (or undetermined): SKIPPING auto-resume of %d session(s). "
+                    "They will fire on next real user turn.",
+                    len(candidates),
+                )
+                for entry in candidates:
+                    entry.resume_pending = False
+                # Persist the cleared flag. SessionStore doesn't expose
+                # a save method by name consistently across versions,
+                # so try common ones; if none exist, the in-memory
+                # change is still correct for this session (won't
+                # survive a restart, but the next restart will re-skip
+                # via the same fail-safe).
+                for _save_name in ("_save", "save_locked", "save"):
+                    _save = getattr(self.session_store, _save_name, None)
+                    if callable(_save):
+                        try:
+                            _save()
+                            break
+                        except Exception as _se:
+                            logger.debug("session_store.%s() failed: %s", _save_name, _se)
+                return 0
+        except Exception as _lab_check_exc:
+            logger.warning("lab mode check failed during auto-resume: %s; failing safe to lab mode (skip)", _lab_check_exc)
+            for entry in candidates:
+                entry.resume_pending = False
+            for _save_name in ("_save", "save_locked", "save"):
+                _save = getattr(self.session_store, _save_name, None)
+                if callable(_save):
+                    try:
+                        _save()
+                        break
+                    except Exception:
+                        pass
             return 0
 
         now = datetime.now()
@@ -7701,6 +7773,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Yuanbao: websockets not installed. Run: pip install websockets")
                 return None
             return YuanbaoAdapter(config)
+
+        elif platform == Platform.DAEMONCRAFT:
+            from gateway.platforms.daemoncraft import DaemonCraftAdapter, check_daemoncraft_requirements
+            if not check_daemoncraft_requirements():
+                logger.warning("DaemonCraft: aiohttp not installed")
+                return None
+            return DaemonCraftAdapter(config)
 
         return None
 
@@ -10076,7 +10155,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK and source.platform != Platform.DAEMONCRAFT:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
@@ -16009,6 +16088,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "tools": [],
                 }
 
+            # DC-134+: per-profile model/provider override (DaemonCraft wake-up routing, etc.)
+            # When source.profile is set, load that profile's config and override the global
+            # model/provider so wake-up turns use the embodied agent's profile.
+            if _profile_name:
+                try:
+                    import yaml as _yaml
+                    _profile_cfg_path = Path.home() / ".hermes" / "profiles" / _profile_name / "config.yaml"
+                    if _profile_cfg_path.exists():
+                        _profile_cfg = _yaml.safe_load(_profile_cfg_path.read_text()) or {}
+                        _profile_model_cfg = _profile_cfg.get("model", {})
+                        if _profile_model_cfg.get("default") and _profile_model_cfg.get("provider"):
+                            model = _profile_model_cfg["default"]
+                            runtime_kwargs["provider"] = _profile_model_cfg["provider"]
+                            if _profile_model_cfg.get("base_url"):
+                                runtime_kwargs["base_url"] = _profile_model_cfg["base_url"]
+                            # Only override api_mode if explicitly set in profile
+                            _profile_api_mode = _profile_model_cfg.get("api_mode")
+                            if _profile_api_mode:
+                                runtime_kwargs["api_mode"] = _profile_api_mode
+                            logger.info(
+                                "Profile model override: profile=%s model=%s provider=%s",
+                                _profile_name, model, runtime_kwargs.get("provider"),
+                            )
+                except Exception:
+                    logger.exception("Failed to load profile model config for %s", _profile_name)
+
             pr = self._provider_routing
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
@@ -16242,6 +16347,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
@@ -16278,6 +16384,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            # If a profile is active, override the cached system prompt so the
+            # agent does not load the global SOUL.md from SQLite session storage.
+            _profile_name = getattr(source, "profile", None)
+            if _profile_name and combined_ephemeral:
+                agent._cached_system_prompt = combined_ephemeral
             # Gate on needs_progress_queue (tool_progress OR thinking_progress)
             # rather than tool_progress alone: the progress_callback also relays
             # _thinking assistant scratch text, which is gated on
@@ -16331,6 +16442,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if tool_choice:
+                agent.request_overrides["tool_choice"] = tool_choice
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
