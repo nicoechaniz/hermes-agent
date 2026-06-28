@@ -223,7 +223,6 @@ export const applyDisplay = (
     detailsMode: resolveDetailsMode(d),
     historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     detailsModeCommandOverride: false,
-    historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),
