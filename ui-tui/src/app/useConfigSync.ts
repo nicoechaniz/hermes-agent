@@ -221,6 +221,7 @@ export const applyDisplay = (
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
+    historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     detailsModeCommandOverride: false,
     historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
