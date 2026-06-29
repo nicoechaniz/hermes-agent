@@ -3340,6 +3340,15 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}🔐 Kimi credentials refreshed after 401. Retrying request...")
                         continue
                 if (
+                    agent.provider in {"kimi-coding", "kimi-coding-cn"}
+                    and status_code == 401
+                    and not _retry.kimi_auth_retry_attempted
+                ):
+                    _retry.kimi_auth_retry_attempted = True
+                    if agent._try_refresh_kimi_client_credentials(force=True):
+                        agent._buffer_vprint("🔐 Kimi credentials refreshed after 401. Retrying request...")
+                        continue
+                if (
                     agent.api_mode == "anthropic_messages"
                     and status_code == 401
                     and hasattr(agent, '_anthropic_api_key')
