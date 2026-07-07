@@ -2973,6 +2973,42 @@ def resolve_provider_client(
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
+    # Universal model-resolution fallback chain.  Callers (notably title
+    # generation, vision, session search, and other auxiliary tasks) can
+    # reach this function without an explicit model — the user picked their
+    # main provider, didn't bother configuring a per-task ``auxiliary.<task>.model``,
+    # and just expects "use my main model for side tasks too."  Resolve in
+    # this order, stopping at the first non-empty answer:
+    #
+    #   1. ``model`` argument (caller knew what they wanted)
+    #   2. Provider's catalog default — cheap/fast model the provider
+    #      registered via ``ProviderProfile.default_aux_model`` or the
+    #      legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK`` dict.  Empty
+    #      string for OAuth-gated providers (openai-codex, xai-oauth)
+    #      whose accepted-model lists drift on the backend, so we don't
+    #      pin a default that can silently rot.
+    #   3. User's main model from ``model.model`` in config.yaml.  This is
+    #      the load-bearing step for OAuth providers: an xai-oauth user
+    #      with grok-4.3 configured gets grok-4.3 for title generation
+    #      instead of silently dropping to whatever Step-2 fallback (#31845).
+    #
+    # Each provider branch below sees a non-empty ``model`` whenever the
+    # user has *anything* configured — no provider-specific empty-model
+    # guards needed.  When the user has NOTHING configured (fresh install,
+    # main_model also empty), the branches still hit their own
+    # missing-credentials returns and ``_resolve_auto`` falls through to
+    # the Step-2 chain as before.
+    #
+    # For ``provider == "auto"`` we intentionally do NOT pre-fill the model
+    # with the user's main model. ``_resolve_auto`` first tries the main
+    # provider with the main model (via ``main_runtime``), and only falls back
+    # to other providers when that fails. Pre-filling ``model`` here would
+    # force the fallback provider to receive the main model ID, which is
+    # invalid for that provider (e.g. Gemini asked for ``kimi-k2.7-code``).
+    # When the caller passes an explicit model we still respect it.
+    if not model and provider != "auto":
+        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
 
