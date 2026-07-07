@@ -1,0 +1,5 @@
+name: altermundi-memory
+version: 1.0.0
+description: "Read-only access to AlterMundi's collective memory (http://10.10.20.1:8899) over anyVPN."
+author: "nicoechaniz"
+compatibility: "Hermes Agent >= v0.16"
