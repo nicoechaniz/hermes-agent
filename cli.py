@@ -364,6 +364,12 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
+        "tui": {
+            "input_max_lines": 8,
+            "collapse_large_pastes": True,
+            "history_nav_requires_empty_input": False,
+            "show_full_input": False,
+        },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
         },
@@ -12210,6 +12216,8 @@ class HermesCLI:
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
 
+        _history_nav_requires_empty = bool(CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False))
+
         @kb.add('up', filter=_normal_input)
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
@@ -12586,6 +12594,9 @@ class HermesCLI:
                 event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
+        _input_max_lines = int(CLI_CONFIG.get("tui", {}).get("input_max_lines", 8))
+        _collapse_large_pastes = bool(CLI_CONFIG.get("tui", {}).get("collapse_large_pastes", True))
+
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
             """Handle terminal paste — detect clipboard images.
@@ -12694,11 +12705,12 @@ class HermesCLI:
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
-            height=Dimension(min=1, max=8, preferred=1),
+            height=Dimension(min=1, max=_input_max_lines, preferred=1),
             prompt=get_prompt,
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
+            scrollbar=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
             completer=_completer,
@@ -12713,6 +12725,26 @@ class HermesCLI:
         # which tries to mkdir() the mkdtemp() directory again and raises
         # EEXIST. The suffix keeps markdown highlighting without that bug.
         input_area.buffer.tempfile_suffix = '.md'
+
+        # Guard history navigation so Up/Down only browse history when the input is empty.
+        if _history_nav_requires_empty:
+            _orig_auto_up = input_area.buffer.auto_up
+            _orig_auto_down = input_area.buffer.auto_down
+
+            def _auto_up_guard(count=1, go_to_start_of_line_if_history_changes=False):
+                if input_area.buffer.text:
+                    input_area.buffer.cursor_up(count)
+                else:
+                    _orig_auto_up(count, go_to_start_of_line_if_history_changes)
+
+            def _auto_down_guard(count=1, go_to_start_of_line_if_history_changes=False):
+                if input_area.buffer.text:
+                    input_area.buffer.cursor_down(count)
+                else:
+                    _orig_auto_down(count, go_to_start_of_line_if_history_changes)
+
+            input_area.buffer.auto_up = _auto_up_guard
+            input_area.buffer.auto_down = _auto_down_guard
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
@@ -12738,7 +12770,7 @@ class HermesCLI:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return min(max(visual_lines, 1), _input_max_lines)
             except Exception:
                 return 1
 
@@ -13623,7 +13655,12 @@ class HermesCLI:
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
                     print()
-                    self._print_user_message_preview(user_input)
+                    _show_full_input = bool(CLI_CONFIG.get("tui", {}).get("show_full_input", False))
+                    if _show_full_input:
+                        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                        ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                    else:
+                        self._print_user_message_preview(user_input)
                     
                     # Show image attachment count
                     if submit_images:
