@@ -3759,9 +3759,13 @@ class HermesCLI:
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
+        _show_full_input = bool(CLI_CONFIG.get("tui", {}).get("show_full_input", False))
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
-        if "\n" in text:
+        if _show_full_input:
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        elif "\n" in text:
             ChatConsole().print(self._format_submitted_user_message_preview(text))
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
@@ -12209,6 +12213,8 @@ class HermesCLI:
         @kb.add('up', filter=_normal_input)
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
+            if _history_nav_requires_empty and event.app.current_buffer.text:
+                return
             event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
