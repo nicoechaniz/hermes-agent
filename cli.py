@@ -5891,9 +5891,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
+        _show_full_input = bool(CLI_CONFIG.get("tui", {}).get("show_full_input", False))
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
-        if "\n" in text:
+        if _show_full_input:
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        elif "\n" in text:
             ChatConsole().print(self._format_submitted_user_message_preview(text))
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
@@ -14088,6 +14092,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
+        _history_nav_requires_empty = bool(
+            CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False)
+        )
 
         def _recall_without_recollapse(buf, move):
             """Run a history-navigation move, suppressing paste-collapse.
@@ -14109,6 +14116,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
             buf = event.app.current_buffer
+            if _history_nav_requires_empty and buf.text:
+                return
             _recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
 
         @kb.add('down', filter=_normal_input)
