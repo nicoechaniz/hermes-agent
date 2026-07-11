@@ -17437,7 +17437,8 @@ class GatewayRunner:
 
             # DC-134: per-profile max_iterations / turn_timeout (DaemonCraft etc.)
             # Load from active profile config so gateway-wide defaults are not
-            # forced on every platform.
+            # forced on every platform. Define profile name once here; it is also
+            # used by the DC-134+ model override block below.
             _profile_name = getattr(source, "profile", None) or ""
             _profile_max_turns = None
             _profile_turn_timeout = None
@@ -17706,7 +17707,7 @@ class GatewayRunner:
             # turn and must not be baked into the cached agent constructor.
             # If a profile is active, override the cached system prompt so the
             # agent does not load the global SOUL.md from SQLite session storage.
-            _profile_name = getattr(source, "profile", None)
+            # _profile_name is defined earlier (DC-134 block).
             if _profile_name and combined_ephemeral:
                 agent._cached_system_prompt = combined_ephemeral
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
