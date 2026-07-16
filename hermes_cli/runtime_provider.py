@@ -134,6 +134,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     path = urlparse(normalized).path.rstrip("/")
     if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return "anthropic_messages"
+    if hostname == "api.kimi.com" and normalized.endswith("/coding/v1"):
+        return "chat_completions"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None

@@ -2148,6 +2148,12 @@ def run_conversation(
                             force=True,
                         )
                         finish_reason = "length"
+                    if finish_reason != "length" and agent._has_truncated_tool_call_args(assistant_message):
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Tool-call arguments truncated mid-generation (invalid JSON) — treating as length-truncation so the retry/boost path recovers it",
+                            force=True,
+                        )
+                        finish_reason = "length"
 
                 # ── Content-policy refusal (HTTP 200) ──────────────────
                 # The model — or the provider's safety system — returned a
@@ -3329,6 +3335,24 @@ def run_conversation(
                     _retry.copilot_auth_retry_attempted = True
                     if agent._try_refresh_copilot_client_credentials():
                         agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
+                        continue
+                if (
+                    agent.provider in {"kimi-coding", "kimi-coding-cn"}
+                    and status_code == 401
+                    and not _retry.kimi_auth_retry_attempted
+                ):
+                    _retry.kimi_auth_retry_attempted = True
+                    if agent._try_refresh_kimi_client_credentials(force=True):
+                        agent._vprint(f"{agent.log_prefix}🔐 Kimi credentials refreshed after 401. Retrying request...")
+                        continue
+                if (
+                    agent.provider in {"kimi-coding", "kimi-coding-cn"}
+                    and status_code == 401
+                    and not _retry.kimi_auth_retry_attempted
+                ):
+                    _retry.kimi_auth_retry_attempted = True
+                    if agent._try_refresh_kimi_client_credentials(force=True):
+                        agent._buffer_vprint("🔐 Kimi credentials refreshed after 401. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "anthropic_messages"

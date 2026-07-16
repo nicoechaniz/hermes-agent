@@ -197,6 +197,41 @@ class TestProviderModelIdsPreferred:
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
         assert captured["models"][0] == "kimi-k3"
 
+    def test_kimi_setup_flow_uses_cli_oauth_without_api_key_prompt(self):
+        """Kimi CLI OAuth should enter model selection without asking for KIMI_API_KEY."""
+        from hermes_cli.model_setup_flows import _model_flow_kimi
+
+        captured = {}
+
+        def fail_prompt(*_args, **_kwargs):
+            raise AssertionError("Kimi OAuth must not prompt for an API key")
+
+        def fake_select(model_list, **kwargs):
+            captured["models"] = model_list
+            captured["confirm_base_url"] = kwargs.get("confirm_base_url")
+            captured["confirm_api_key"] = kwargs.get("confirm_api_key")
+            return None
+
+        with (
+            patch("hermes_cli.main._prompt_api_key", side_effect=fail_prompt),
+            patch(
+                "hermes_cli.auth.resolve_kimi_coding_runtime_credentials",
+                return_value={
+                    "api_key": "oauth-token",
+                    "base_url": "https://api.kimi.com/coding/v1",
+                    "source": "kimi-cli-oauth",
+                },
+            ),
+            patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
+            patch("hermes_cli.config.get_env_value", return_value=""),
+            patch("hermes_cli.config.save_env_value"),
+        ):
+            _model_flow_kimi({}, current_model="")
+
+        assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
+        assert captured["confirm_base_url"] == "https://api.kimi.com/coding/v1"
+        assert captured["confirm_api_key"] == "oauth-token"
+
 
 class TestOpenRouterAndNousUnchanged:
     """Per Teknium: openrouter and nous are NEVER merged with models.dev."""

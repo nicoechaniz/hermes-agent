@@ -1608,6 +1608,41 @@ class AIAgent:
             return True
         return provider_lower == "ollama"
 
+    def _has_truncated_tool_call_args(self, assistant_message) -> bool:
+        """Detect a tool call whose JSON arguments were cut off mid-generation
+        (e.g. kimi-coding emitting an opening brace then stopping while
+        under-reporting finish_reason as 'stop'/'tool_calls'). Returning True
+        lets the caller upgrade finish_reason to 'length' so the existing
+        truncated-tool-call retry/boost path recovers instead of silently
+        sanitizing the args to an empty object and looping on an empty tool
+        call. Conservative: only fires when args start as a JSON object/array
+        but fail to parse."""
+        if self.api_mode != "chat_completions":
+            return False
+        tool_calls = getattr(assistant_message, "tool_calls", None)
+        if not tool_calls:
+            return False
+        import json as _json
+        for tc in tool_calls:
+            fn = getattr(tc, "function", None)
+            if fn is None and isinstance(tc, dict):
+                fn = tc.get("function")
+            if fn is None:
+                continue
+            args = getattr(fn, "arguments", None)
+            if args is None and isinstance(fn, dict):
+                args = fn.get("arguments")
+            if not isinstance(args, str):
+                continue
+            stripped = args.strip()
+            if not stripped or stripped[0] not in "{[":
+                continue
+            try:
+                _json.loads(stripped)
+            except (ValueError, TypeError):
+                return True
+        return False
+
     def _should_treat_stop_as_truncated(
         self,
         finish_reason: str,
@@ -4811,6 +4846,40 @@ class AIAgent:
             return False
 
         logger.info("Copilot credentials refreshed from %s", token_source)
+
+    def _try_refresh_kimi_client_credentials(self, *, force: bool = True) -> bool:
+        if self.provider not in {"kimi-coding", "kimi-coding-cn"} and not base_url_host_matches(self.base_url, "api.kimi.com"):
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_kimi_coding_runtime_credentials, kimi_coding_default_headers
+
+            creds = resolve_kimi_coding_runtime_credentials(
+                force_refresh=force,
+                allow_api_key_fallback=False,
+            )
+        except Exception as exc:
+            logger.debug("Kimi credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        source = str(creds.get("source") or "")
+        if source not in {"kimi-cli-oauth", "kimi-cli-oauth-refresh"}:
+            return False
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._client_kwargs["default_headers"] = kimi_coding_default_headers()
+
+        if not self._replace_primary_openai_client(reason="kimi_credential_refresh"):
+            return False
         return True
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
