@@ -184,7 +184,8 @@ def test_policy_scope_filter_blocks_joke(monkeypatch):
 
     calls = []
     def fake_post(url, json=None, timeout=None):
-        calls.append(json)
+        if url.endswith("/intent"):
+            calls.append(json)
         return MagicMock()
 
     with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
@@ -205,7 +206,8 @@ def test_policy_ambiguity_blocks_vague(monkeypatch):
 
     calls = []
     def fake_post(url, json=None, timeout=None):
-        calls.append(json)
+        if url.endswith("/intent"):
+            calls.append(json)
         return MagicMock()
 
     with patch("tools.embodied_plan_tool.httpx.post", side_effect=fake_post):
@@ -225,7 +227,8 @@ def test_policy_decomposes_and_normalizes(monkeypatch):
 
     calls = []
     def fake_post(url, json=None, timeout=None):
-        calls.append(json)
+        if url.endswith("/intent"):
+            calls.append(json)
         resp = MagicMock()
         resp.json.return_value = {
             "ok": True,
@@ -262,7 +265,8 @@ def test_policy_narrows_tools(monkeypatch):
 
     calls = []
     def fake_post(url, json=None, timeout=None):
-        calls.append(json)
+        if url.endswith("/intent"):
+            calls.append(json)
         resp = MagicMock()
         resp.json.return_value = {"ok": True, "plan": {}, "execution_results": []}
         resp.status_code = 200
@@ -288,6 +292,8 @@ def test_policy_threads_previous_error(monkeypatch):
     call_idx = 0
     def fake_post(url, json=None, timeout=None):
         nonlocal call_idx
+        if not url.endswith("/intent"):
+            return MagicMock()
         call_idx += 1
         resp = MagicMock()
         if call_idx == 1:

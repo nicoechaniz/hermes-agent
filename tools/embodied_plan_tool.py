@@ -160,7 +160,14 @@ def _summarize_result(result: dict, intent: str) -> str:
     # Success
     if ok:
         body_plan = plan.get("body_plan") or []
-        tool_names = [s.get("tool", "?") for s in body_plan[:3]] if isinstance(body_plan, list) else []
+        tool_names = (
+            [
+                step.get("tool", "?") if isinstance(step, dict) else str(step)
+                for step in body_plan[:3]
+            ]
+            if isinstance(body_plan, list)
+            else []
+        )
         tools_str = ", ".join(tool_names) if tool_names else "acted"
         if exec_results:
             ok_count = sum(1 for r in exec_results if r.get("ok"))
