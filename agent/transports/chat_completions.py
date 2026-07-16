@@ -9,7 +9,11 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
-from typing import Any, Dict
+import copy
+import logging
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -509,6 +513,30 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        # Tool choice override for proactive/agentic turns.
+        # When forcing tool_choice="required", disable reasoning/thinking for
+        # this turn — several providers (Kimi, DeepSeek, etc.) reject the
+        # combination. The system prompt still instructs the agent to use tools.
+        _tool_choice = params.get("tool_choice")
+        if _tool_choice:
+            if _tool_choice == "required":
+                _stripped_any = False
+                if "reasoning_effort" in api_kwargs:
+                    api_kwargs.pop("reasoning_effort")
+                    _stripped_any = True
+                if "extra_body" in api_kwargs:
+                    _eb = api_kwargs["extra_body"]
+                    if isinstance(_eb, dict) and "thinking_config" in _eb:
+                        _eb.pop("thinking_config")
+                        _stripped_any = True
+                    if isinstance(_eb, dict) and not _eb:
+                        api_kwargs.pop("extra_body")
+                if _stripped_any:
+                    logger.info(
+                        "[chat_completions] Disabled thinking for tool_choice='required' turn."
+                    )
+            api_kwargs["tool_choice"] = _tool_choice
+
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -626,6 +654,33 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body.update(v)
                 else:
                     api_kwargs[k] = v
+
+        # Tool choice override for proactive/agentic turns.
+        # When forcing tool_choice="required", disable reasoning/thinking
+        # for this turn — several providers reject the combination.
+        # tool_choice may arrive via params (direct) or via request_overrides (merged above).
+        _tool_choice = params.get("tool_choice")
+        if not _tool_choice and overrides:
+            _tool_choice = overrides.get("tool_choice")
+        if _tool_choice:
+            if _tool_choice == "required":
+                _stripped_any = False
+                if "reasoning_effort" in api_kwargs:
+                    api_kwargs.pop("reasoning_effort")
+                    _stripped_any = True
+                if "thinking" in extra_body:
+                    extra_body.pop("thinking")
+                    _stripped_any = True
+                if "thinking_config" in extra_body:
+                    extra_body.pop("thinking_config")
+                    _stripped_any = True
+                if _stripped_any:
+                    logger.info(
+                        "[chat_completions] Disabled thinking for tool_choice='required' turn (profile path)."
+                    )
+            # Only set if not already set by request_overrides merge above
+            if "tool_choice" not in api_kwargs:
+                api_kwargs["tool_choice"] = _tool_choice
 
         if extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)

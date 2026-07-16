@@ -10237,6 +10237,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.DAEMONCRAFT:
+            from gateway.platforms.daemoncraft import DaemonCraftAdapter, check_daemoncraft_requirements
+            if not check_daemoncraft_requirements():
+                logger.warning("DaemonCraft: aiohttp not installed")
+                return None
+            return DaemonCraftAdapter(config)
+
         return None
 
     def _make_adapter_auth_check(
@@ -13463,7 +13470,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if (
+            not history
+            and source.platform
+            and source.platform not in {Platform.LOCAL, Platform.WEBHOOK, Platform.DAEMONCRAFT}
+        ):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             # Multiplex: home channel may live only in the profile secret
@@ -13634,6 +13645,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                tool_choice=getattr(event, "tool_choice", None),
             )
 
             # Stop persistent typing indicator now that the agent is done.
@@ -19672,6 +19684,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        tool_choice: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -19690,6 +19703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                tool_choice=tool_choice,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -19701,6 +19715,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                tool_choice=tool_choice,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -19822,6 +19837,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        tool_choice: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -20923,6 +20939,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
             max_iterations = _current_max_iterations()
+            _agent_config = user_config.get("agent") or {}
+            try:
+                turn_timeout_seconds = int(_agent_config.get("turn_timeout_seconds") or 0) or None
+            except (TypeError, ValueError):
+                turn_timeout_seconds = None
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -20941,6 +20962,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # DC-134+: per-profile model/provider override (DaemonCraft wake-up routing, etc.)
+            # When source.profile is set, load that profile's config and override the global
+            # model/provider so wake-up turns use the embodied agent's profile.
+            if _profile_name:
+                try:
+                    import yaml as _yaml
+                    _profile_cfg_path = Path.home() / ".hermes" / "profiles" / _profile_name / "config.yaml"
+                    if _profile_cfg_path.exists():
+                        _profile_cfg = _yaml.safe_load(_profile_cfg_path.read_text()) or {}
+                        _profile_model_cfg = _profile_cfg.get("model", {})
+                        if _profile_model_cfg.get("default") and _profile_model_cfg.get("provider"):
+                            model = _profile_model_cfg["default"]
+                            runtime_kwargs["provider"] = _profile_model_cfg["provider"]
+                            if _profile_model_cfg.get("base_url"):
+                                runtime_kwargs["base_url"] = _profile_model_cfg["base_url"]
+                            # Only override api_mode if explicitly set in profile
+                            _profile_api_mode = _profile_model_cfg.get("api_mode")
+                            if _profile_api_mode:
+                                runtime_kwargs["api_mode"] = _profile_api_mode
+                            logger.info(
+                                "Profile model override: profile=%s model=%s provider=%s",
+                                _profile_name, model, runtime_kwargs.get("provider"),
+                            )
+                except Exception:
+                    logger.exception("Failed to load profile model config for %s", _profile_name)
 
             pr = self._provider_routing
             reasoning_config = self._resolve_session_reasoning_config(
@@ -21286,6 +21333,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     **turn_route["runtime"],
                     **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
+
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
@@ -21330,6 +21378,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            # If a profile is active, override the cached system prompt so the
+            # agent does not load the global SOUL.md from SQLite session storage.
+            _profile_name = getattr(source, "profile", None)
+            if _profile_name and combined_ephemeral:
+                agent._cached_system_prompt = combined_ephemeral
+
             # Gate on needs_progress_queue (tool_progress OR thinking_progress)
             # rather than tool_progress alone: the progress_callback also relays
             # _thinking assistant scratch text, which is gated on
@@ -21391,6 +21445,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if tool_choice:
+                agent.request_overrides["tool_choice"] = tool_choice
             # Must-deliver notes for THIS turn ride the current user message
             # (api_content sidecar), never the system prompt: staged by
             # _handle_message_with_agent (auto-reset note, first-contact
