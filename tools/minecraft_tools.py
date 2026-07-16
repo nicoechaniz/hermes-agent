@@ -1223,7 +1223,7 @@ MC_SCREENSHOT_SCHEMA = {
 
 def _handle_mc_command(args: dict, **kwargs) -> str:
     """Execute a Minecraft server command via the bot's chat interface.
-    
+
     The bot must have operator privileges for most commands.
     Commands are sent as chat messages starting with '/' and are executed
     by the server without appearing in public chat.
