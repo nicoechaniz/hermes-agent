@@ -147,16 +147,16 @@ def _summarize_result(result: dict, intent: str) -> str:
     """Return a one-line human-readable summary of what gAndy did."""
     if not isinstance(result, dict):
         return f"gAndy returned unexpected: {str(result)[:100]}"
-    
+
     ok = result.get("ok")
     plan = result.get("plan") or {}
     exec_results = result.get("execution_results") or []
     outcome = result.get("outcome", "")
-    
+
     # Policy handled upstream
     if result.get("policy_handled"):
         return f"gAndy: handled by {result.get('policy_layer','?')} — {result.get('policy_reason','')[:120]}"
-    
+
     # Success
     if ok:
         body_plan = plan.get("body_plan") or []
@@ -173,7 +173,7 @@ def _summarize_result(result: dict, intent: str) -> str:
             ok_count = sum(1 for r in exec_results if r.get("ok"))
             return f"gAndy: OK — {ok_count}/{len(exec_results)} steps succeeded ({tools_str}). Intent: {intent[:80]}"
         return f"gAndy: OK — {tools_str}. Intent: {intent[:80]}"
-    
+
     # Failure
     error = result.get("error") or {}
     error_type = error.get("error_type", "unknown") if isinstance(error, dict) else str(error)[:80]
@@ -219,7 +219,7 @@ def _raw_handler(args: dict[str, Any]) -> str:
         body["bot_api_url"] = bot_api_url
 
     result = _post_intent(body)
-    
+
     # Tier 2a recovery: deterministic synthesis for spatial failures.
     failed = [r for r in (result.get("execution_results") or []) if not r.get("ok")]
     if failed and not body.get("previous_error"):
@@ -234,11 +234,11 @@ def _raw_handler(args: dict[str, Any]) -> str:
             }
             retry_body["_recovery_hint"] = "spatial_retry_adjacent"
             result = _post_intent(retry_body)
-    
+
     # Build a human-readable summary so the LLM doesn't have to parse the full JSON
     summary = _summarize_result(result, body.get("intent", ""))
     result["_summary"] = summary
-    
+
     return json.dumps(result)
 
 

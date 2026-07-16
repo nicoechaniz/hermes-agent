@@ -31,7 +31,7 @@
 - Routing allows per-wake-word targeting of specific agents/sessions.
 
 ### Talk Mode (Native Continuous Voice Conversation)
-- **Native path** (macOS/iOS/Android nodes): 
+- **Native path** (macOS/iOS/Android nodes):
   1. Local device STT (on-device ASR, configurable `speechLocale`).
   2. Transcript sent to active Gateway session (via chat pipeline or talk RPCs).
   3. Agent reasons / uses tools.

@@ -161,13 +161,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
     def _write_event_to_queue(self, event: dict) -> None:
         """Write an event to the daemoncraft-events.jsonl bridge file.
-        
+
         The agent_loop reads this file each tick and includes events in the
         context stream, which the CLI can observe.
         """
         try:
             # Match agent_loop's path: ~/.hermes/sessions/<BOT_USERNAME>-events.jsonl
-            bot_user = (os.getenv("MC_USERNAME") or self._bot_username or "CompAII")
+            bot_user = (os.getenv("MC_USERNAME") or self._bot_username or "daemoncraft")
             queue_path = Path.home() / ".hermes" / "sessions" / f"{bot_user}-events.jsonl"
             queue_path.parent.mkdir(parents=True, exist_ok=True)
             with open(queue_path, "a") as f:
@@ -177,7 +177,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
 
     async def _is_lab_mode(self) -> bool:
         """Check if the bot is in lab mode (explicit, not automagic).
-        
+
         In lab mode, the gateway never spawns agent turns. All events
         (chat, heartbeats) only add context to the stream file.
         """
