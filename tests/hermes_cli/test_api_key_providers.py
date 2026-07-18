@@ -15,9 +15,11 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    KIMI_CODE_CLI_USER_AGENT,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
+    kimi_coding_default_headers,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
@@ -981,6 +983,16 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+def test_kimi_oauth_headers_advertise_official_cli(monkeypatch):
+    """Inherited Kimi OAuth must be attributed to the Kimi Code plan."""
+    monkeypatch.setattr("hermes_cli.auth._kimi_cli_version", lambda: "9.9.9")
+
+    headers = kimi_coding_default_headers()
+
+    assert headers["User-Agent"] == f"{KIMI_CODE_CLI_USER_AGENT}/9.9.9"
+    assert headers["X-Msh-Platform"] == "kimi_cli"
 
 
 class TestZaiEndpointAutoDetect:

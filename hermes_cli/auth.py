@@ -541,6 +541,7 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
 
 KIMI_CODE_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 KIMI_CODE_OAUTH_HOST = "https://auth.kimi.com"
+KIMI_CODE_CLI_USER_AGENT = "kimi-code-cli"
 
 
 def _kimi_cli_credentials_path() -> Path:
@@ -755,7 +756,10 @@ def kimi_coding_default_headers() -> Dict[str, str]:
     version = _kimi_cli_version()
 
     headers: Dict[str, str] = {
-        "User-Agent": f"KimiCLI/{version}",
+        # Kimi uses the User-Agent to attribute OAuth requests to a plan.
+        # Mirror the official CLI identity so inherited ~/.kimi credentials
+        # consume the Kimi Code plan rather than a Claude Code quota.
+        "User-Agent": f"{KIMI_CODE_CLI_USER_AGENT}/{version}",
         "X-Msh-Platform": "kimi_cli",
         "X-Msh-Version": version,
         "X-Msh-Device-Name": _platform.node() or _socket.gethostname(),
