@@ -2635,7 +2635,14 @@ def get_model_context_length(
                 _maybe_cache_local_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    # 8. Provider-scoped hardcoded defaults. Kimi Code accepts the short
+    # ``k3`` alias while its catalog uses the fully qualified ``kimi-k3``
+    # identifier. Keep this scoped to Kimi: a generic "k3" substring fallback
+    # could misidentify unrelated providers' model IDs.
+    if effective_provider in {"kimi-for-coding", "kimi-coding", "kimi-coding-cn"} and model.lower() == "k3":
+        return 1_048_576
+
+    # 9. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
@@ -2646,7 +2653,7 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Default fallback — 256K
+    # 10. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
 
 
