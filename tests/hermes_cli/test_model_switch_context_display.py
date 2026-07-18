@@ -89,6 +89,22 @@ class TestResolveDisplayContextLength:
             )
         assert ctx == 128_000
 
+    def test_kimi_k3_short_alias_uses_kimi_coding_context(self):
+        """The Kimi Code ``k3`` alias has a 1M window, not the 256K fallback."""
+        from agent import model_metadata as mm
+
+        with patch.object(mm, "get_cached_context_length", return_value=None), \
+             patch.object(mm, "fetch_endpoint_model_metadata", return_value={}), \
+             patch.object(mm, "fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            ctx = resolve_display_context_length(
+                "k3",
+                "kimi-for-coding",
+                base_url="https://api.kimi.com/coding/v1",
+            )
+
+        assert ctx == 1_048_576
+
     def test_custom_providers_override_honored(self):
         """Regression for #15779: /model switch onto a custom provider must
         surface the configured per-model context_length, not the 128K/256K
