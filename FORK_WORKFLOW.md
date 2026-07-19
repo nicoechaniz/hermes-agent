@@ -12,20 +12,27 @@ This repository is Nicolás' Hermes Agent fork. It intentionally carries local f
 | `feat/*` / `fix/*` | Canonical fork features/fixes | Branch from `nousmain`, not from `main`, unless explicitly creating a short-lived integration/docs cleanup branch. Each branch must apply cleanly over `nousmain`. |
 | `backup/*` / `*-legacy` | Safety archives | Do not merge. Keep only while useful for recovery. |
 
-## Current canonical feature branches
+## Maintained patch lanes
 
-These are the active branches we intentionally preserve as separable patches over `nousmain`:
+The active set is explicit. It is not inferred from `git branch`, merge ancestry,
+or the presence of an old remote ref. Each lane must be a clean patch series over
+`nousmain` before it can participate in an upstream sync:
 
-| Branch | Purpose | Notes |
-|--------|---------|-------|
-| `feat/kimi` | Kimi support and corrections | Kimi CLI OAuth from `~/.kimi/credentials/kimi-code.json`; `X-Msh-*` headers; runtime credential resolution; Kimi OAuth refresh on auxiliary 401; Kimi K2.x context-length fixes. This replaces the old `feat/kimi-oauth-clean*` and `fix/kimi-context-length-resolution` branches. |
-| `feat/daemoncraft` | DaemonCraft gateway / embodied-agent integration | Canonical DaemonCraft patch set. Keep clean over `nousmain`; old messy history lives only in `feat/daemoncraft-legacy` / backups. |
-| `feat/minimax-defaults` | MiniMax defaults | Provider defaults for MiniMax Anthropic Messages transport and base URL behavior. |
-| `feat/kanban-review` | Kanban review orchestration | Review graph/templates/CLI wiring for `hermes kanban review`. |
-| `feat/altermundi-cli` | CLI input / interrupt behavior | Ctrl+C priority, interrupt transcript safety, multimodal requeue, TUI config support. |
-| `feat/altermundi-tui` | TUI history behavior | History navigation behavior in the Ink TUI. |
+| Branch | Purpose |
+|--------|---------|
+| `feat/altermundi` | Generic Altermundi/Hermes changes. |
+| `feat/kimi` | Kimi OAuth/provider behavior, including Kimi Coding streaming and truncation fixes. |
+| `feat/kimi-webbridge` | Kimi real-browser toolset. |
+| `feat/video-gen-minimax` | MiniMax video generation provider. |
+| `fix/tui-history-nav-requires-empty` | Ink TUI history navigation behavior. |
+| `feat/daemoncraft` | The single DaemonCraft/Hermes lane: platform registration, gateway, adapter, event/session plumbing, embodied tools, and focused tests. |
 
-If a branch is superseded, delete the remote branch after the replacement is merged and verified. Leave a local `backup/*` branch only when recent recovery is useful.
+`backup/*`, `safepoint-*`, `main-rebuild`, `*-legacy`, and recovery branches are
+archives, not composition inputs. Do not drop an active lane because a similar
+change exists in `main`; normalize its patch series and compare it deliberately.
+
+The live topology and clean-apply audit are recorded in
+`~/wiki/projects/hermes-agent/notes/fork-topology-2026-07-15.md`.
 
 ## Sync workflow
 
@@ -43,28 +50,30 @@ git checkout nousmain
 git reset --hard upstream/main
 ```
 
-Rebuild each canonical feature branch on top of the new `nousmain`:
+Rebuild each maintained patch lane on top of the new `nousmain`. Before merging,
+prove that each one applies cleanly:
 
 ```bash
-git checkout feat/kimi
+git checkout <lane>
 git rebase nousmain
-# resolve conflicts, run focused tests, then push:
-git push origin feat/kimi --force-with-lease
+git merge-tree --write-tree nousmain <lane>
+# exit code 0 is required for every active lane
 ```
 
-Repeat for each active canonical branch. Do not rebase `main` onto feature branches; `main` is rebuilt by merging branches.
+Run focused tests after each rebase. Do not rebase `main` onto feature branches;
+`main` is rebuilt only after every maintained lane has passed the clean-apply gate.
 
 Rebuild integration `main`:
 
 ```bash
 git checkout main
 git reset --hard nousmain
+git merge --no-ff feat/altermundi
 git merge --no-ff feat/kimi
+git merge --no-ff feat/kimi-webbridge
+git merge --no-ff feat/video-gen-minimax
+git merge --no-ff fix/tui-history-nav-requires-empty
 git merge --no-ff feat/daemoncraft
-git merge --no-ff feat/minimax-defaults
-git merge --no-ff feat/kanban-review
-git merge --no-ff feat/altermundi-cli
-git merge --no-ff feat/altermundi-tui
 ```
 
 Run tests before pushing. Use the wrapper, never raw `pytest`:
@@ -103,8 +112,8 @@ Before declaring a branch/workflow update complete:
 
 1. `git remote -v` confirms `origin` and `upstream`.
 2. `git status --short --branch` is clean.
-3. Every canonical feature branch is either rebased onto `nousmain` or explicitly documented as pending rebase.
-4. `main` contains every canonical active branch.
+3. Every maintained patch lane passes `git merge-tree --write-tree nousmain <lane>`.
+4. `main` is composed from every maintained patch lane, in the documented order.
 5. Superseded remote branches are deleted or clearly documented as archives.
 6. Tests relevant to the changed areas pass via `scripts/run_tests.sh`.
 7. Deployed checkout `~/.hermes/hermes-agent` matches `origin/main` when runtime behavior changed.

@@ -9,7 +9,11 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
-from typing import Any, Dict
+import copy
+import logging
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -187,6 +191,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or "api_content" in msg  # persist-what-you-send sidecar
             ):
                 needs_sanitize = True
                 break
@@ -229,6 +234,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
+                or "api_content" in msg  # persist-what-you-send sidecar
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -236,6 +242,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("tool_name", None)
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
+                out_msg.pop("api_content", None)  # persist-what-you-send sidecar
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
@@ -506,6 +513,30 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        # Tool choice override for proactive/agentic turns.
+        # When forcing tool_choice="required", disable reasoning/thinking for
+        # this turn — several providers (Kimi, DeepSeek, etc.) reject the
+        # combination. The system prompt still instructs the agent to use tools.
+        _tool_choice = params.get("tool_choice")
+        if _tool_choice:
+            if _tool_choice == "required":
+                _stripped_any = False
+                if "reasoning_effort" in api_kwargs:
+                    api_kwargs.pop("reasoning_effort")
+                    _stripped_any = True
+                if "extra_body" in api_kwargs:
+                    _eb = api_kwargs["extra_body"]
+                    if isinstance(_eb, dict) and "thinking_config" in _eb:
+                        _eb.pop("thinking_config")
+                        _stripped_any = True
+                    if isinstance(_eb, dict) and not _eb:
+                        api_kwargs.pop("extra_body")
+                if _stripped_any:
+                    logger.info(
+                        "[chat_completions] Disabled thinking for tool_choice='required' turn."
+                    )
+            api_kwargs["tool_choice"] = _tool_choice
+
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -623,6 +654,33 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body.update(v)
                 else:
                     api_kwargs[k] = v
+
+        # Tool choice override for proactive/agentic turns.
+        # When forcing tool_choice="required", disable reasoning/thinking
+        # for this turn — several providers reject the combination.
+        # tool_choice may arrive via params (direct) or via request_overrides (merged above).
+        _tool_choice = params.get("tool_choice")
+        if not _tool_choice and overrides:
+            _tool_choice = overrides.get("tool_choice")
+        if _tool_choice:
+            if _tool_choice == "required":
+                _stripped_any = False
+                if "reasoning_effort" in api_kwargs:
+                    api_kwargs.pop("reasoning_effort")
+                    _stripped_any = True
+                if "thinking" in extra_body:
+                    extra_body.pop("thinking")
+                    _stripped_any = True
+                if "thinking_config" in extra_body:
+                    extra_body.pop("thinking_config")
+                    _stripped_any = True
+                if _stripped_any:
+                    logger.info(
+                        "[chat_completions] Disabled thinking for tool_choice='required' turn (profile path)."
+                    )
+            # Only set if not already set by request_overrides merge above
+            if "tool_choice" not in api_kwargs:
+                api_kwargs["tool_choice"] = _tool_choice
 
         if extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)
@@ -776,15 +834,18 @@ class ChatCompletionsTransport(ProviderTransport):
         return True
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
-        """Extract OpenRouter/OpenAI cache stats from prompt_tokens_details."""
+        """Extract cache stats from prompt_tokens_details (OpenRouter/OpenAI)
+        or DeepSeek's native top-level prompt_cache_hit_tokens field."""
         usage = getattr(response, "usage", None)
         if usage is None:
             return None
         details = getattr(usage, "prompt_tokens_details", None)
-        if details is None:
-            return None
-        cached = getattr(details, "cached_tokens", 0) or 0
-        written = getattr(details, "cache_write_tokens", 0) or 0
+        cached = getattr(details, "cached_tokens", 0) or 0 if details else 0
+        written = getattr(details, "cache_write_tokens", 0) or 0 if details else 0
+        if not cached:
+            # DeepSeek native API shape (api.deepseek.com): top-level
+            # prompt_cache_hit_tokens / prompt_cache_miss_tokens (#61871).
+            cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
         if cached or written:
             return {"cached_tokens": cached, "creation_tokens": written}
         return None

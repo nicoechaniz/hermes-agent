@@ -1,101 +1,73 @@
 # Changelog — nicoechaniz/hermes-agent fork
 
-Team-facing summary of changes to our fork. For branch topology and sync commands, see `FORK_WORKFLOW.md`.
+> **Provider note:** Profile configs reference DeepSeek, Kimi, and MiniMax providers because that's our stack. Team members using different providers (OpenRouter, Anthropic, Nous, etc.) should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` (or symlink to shared `.env`). The `max_turns` and `reasoning_effort` values are provider-agnostic and should work across backends.
 
-> Provider note: profile configs reference DeepSeek, Kimi, and MiniMax providers because that is our stack. Team members using different providers should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` or a symlinked shared `.env`.
+## 2026-05-16 — mc_bit Tool Fix
 
-## 2026-05-14 — Kimi OAuth architecture consolidation
+### Synchronous mc_bit Handler
 
-### Centralized resolution
+The `mc_bit` Hermes tool was broken since deploy: `async def _handler(...)` returned
+a coroutine object, which surfaced as `object of type 'coroutine' has no len()` in
+live tool calls. Replaced with a synchronous `httpx.get` wrapper.
 
-- `resolve_api_key_provider_credentials()` now automatically tries Kimi CLI OAuth (`~/.kimi/credentials/kimi-code.json`) when no `KIMI_API_KEY` env var is present.
-- Removed 33 lines of scattered ad-hoc OAuth fallback code from `runtime_provider.py` (`_try_kimi_oauth_credentials()` and both call sites).
-- All consumers of the canonical resolver (runtime provider, auxiliary client, etc.) get OAuth automatically without manual fallback code.
+**Branch:** `feat/daemoncraft`
+**Commit:** `a16bc0c5b fix(daemoncraft): make mc_bit tool synchronous`
 
-### Branch sync
+Tests: `scripts/run_tests.sh tests/tools/test_mc_bit_tool.py -q --tb=short` → 3 passed.
 
-- Cherry-picked missing Kimi commits from `main` into `feat/kimi`:
-  - `_try_refresh_kimi_client_credentials()` in `run_agent.py` (mid-conversation 401 refresh)
-  - `kimi_coding_default_headers()` applied consistently across all provider paths
-- `feat/kimi` is now a complete clean patch stack with no Kimi gaps vs `main`.
-- Merged back to `main`, resolved one minor merge conflict in `agent/auxiliary_client.py`.
+### mBit Context in Embodied Service (DaemonCraft side)
 
-### Test fixes
+See DaemonCraft CHANGELOG for the full mBit context integration. The hermes-agent
+side only needed the mc_bit tool fix above — the world_state injection lives in
+the embodied service composer on the DaemonCraft repo.
 
-- Fixed `test_resolve_kimi_prefers_cli_oauth_without_api_key`: mock now accepts `**kwargs` to match the new `allow_api_key_fallback=False` call signature.
-- Fixed two pre-existing broken tests with mismatched mock values:
-  - `test_resolve_runtime_provider_kimi_uses_oauth_chat_mode`
-  - `test_resolve_runtime_provider_lmstudio_uses_token_when_present`
+## 2026-05-09 — Multi-Agent Coding Roster + Kanban Hardening
 
-### Verification
+### New Profiles
+- **riqui** (deepseek-v4-flash, max_turns=30, reasoning=minimal): Surgical coding Kanban worker. Fixed protocol violation (was max_turns=15 + reasoning=none → iteration exhaustion before kanban_complete).
+- **miki** (kimi-k2.6, kimi-coding OAuth via ~/.kimi/, max_turns=30, reasoning=high): Coding agent. Tested working.
+- **maxi** (MiniMax-M2.7, minimax provider, Anthropic endpoint, max_turns=30, reasoning=high): Coding agent. Config created but blocked by CLI api_mode detection bug (404 — hardcoded chat_completions vs anthropic_messages).
+- **claudio** (planned): Proxy profile → Claude Code CLI
+- **gepeto** (planned): Proxy profile → Codex CLI
 
-- All 287 provider/auth tests pass: `scripts/run_tests.sh tests/hermes_cli/test_runtime_provider_resolution.py tests/hermes_cli/test_api_key_providers.py -q`
+### Kanban System
+- **Protocol violation root cause:** max_turns too low + reasoning=none on weak models → iteration exhaustion → model writes kanban_complete as text (not function call) → clean exit without transition → effective_limit=1 → auto-blocked
+- **Fix:** max_turns ≥ 25 + reasoning ≥ minimal for all Kanban coding workers
+- **Self-spawn guard:** Dispatcher DOES spawn tasks assigned to gateway's own profile (compaii). Tasks must stay in `todo`/`triage` until manually claimed.
+- **Smoke test pattern:** t_4631001e (17s, riqui) validated the fix
 
-## 2026-05-13 — Kimi branch consolidation
+### RTK Plugin
+- **FIXED** by Riqui (t_ad89b059): Replaced corrupted `rtk_hermes/__init__.py` (circular self-import) with 332-line source from GitHub
+- Binary symlinked for gateway PATH
+- Plugin loads cleanly on gateway restart (no WARNING)
 
-### Branch workflow
+### Memory Infrastructure
+- HMK chapters 9-11 seeded: dispatcher guard, profile roster, maxi api_mode debug
+- Project MEMORY.md updated with full profile roster and dispatcher critical rule
 
-- Canonical Kimi branch is now `feat/kimi`.
-- `feat/kimi` is a clean patch stack over `nousmain`.
-- Superseded branches removed from `origin`:
-  - `feat/kimi-oauth-clean`
-  - `feat/kimi-oauth-clean-v3`
-  - `fix/kimi-context-length-resolution`
-- `main` is the integration branch: `nousmain` plus all active canonical feature branches.
-- Runtime deploy target `~/.hermes/hermes-agent` tracks `origin/main`.
+### Known Issues
+- **maxi:** `hermes -p maxi chat` returns 404. CLI hardcodes api_mode=chat_completions. Provider transport=anthropic_messages is ignored. curl confirms endpoint works.
+- **Upstream:** ~90 commits behind (v2026.5.7+), needs sync
 
-### Kimi support in `feat/kimi`
+## 2026-05-08 — Upstream Sync v2026.5.7
 
-- Kimi CLI OAuth credentials are read from `~/.kimi/credentials/kimi-code.json` when `KIMI_API_KEY` is not set.
-- `KIMI_API_KEY` takes precedence over OAuth credentials when present.
-- `kimi-coding` supports both endpoints:
-  - `https://api.kimi.com/coding` via Anthropic Messages
-  - `https://api.kimi.com/coding/v1` via OpenAI Chat Completions
-- Kimi CLI-compatible `X-Msh-*` headers and user-agent are applied to Kimi requests.
-- Runtime provider resolution falls back to Kimi OAuth instead of silently producing `no-key-required`.
-- Auxiliary Kimi calls refresh OAuth credentials on 401.
-- Kimi K2.x context lengths are pinned to 262144 where needed and stale OpenRouter underreports are ignored for known providers.
+- Full rebase onto upstream/main (993 commits, 7 conflicts resolved)
+- All 10 custom features preserved
+- Gateway split: hermes-gateway.service (CompAII) + hermes-gateway@steve.service
+- RTK plugin installed (but init.py was corrupted — fixed May 9)
+- Kanban migration from Lattice (64+ tasks)
+- CompAII hardening: max_turns=40, reasoning=high, compression=0.50
+- HMK memory kit: library.db seeded, engram_pack prefetch
 
-### Verification
+## Custom Features (all branches merged into main)
 
-- Focused tests: `scripts/run_tests.sh tests/hermes_cli/test_runtime_provider_resolution.py tests/agent/test_model_metadata.py -q --tb=short`
-- Kimi OAuth smoke: `hermes chat --provider kimi-coding -m kimi-k2.6 -q 'Say OK only.' -Q --yolo`
-
-## 2026-05-11 — Kimi K2.6 context window bug
-
-### Problem
-
-Hermes rejected `kimi-k2.6` with a 32768-token context window even though the real context is 262144.
-
-### Root cause
-
-1. Provider mapping was incomplete for `kimi` / `moonshot` aliases.
-2. Provider-unaware OpenRouter metadata could be consulted before curated Hermes defaults.
-
-### Fix
-
-- Added Kimi aliases to models.dev provider mapping.
-- Added explicit Kimi K2.x context-length defaults.
-- Kept provider-specific/curated context data ahead of provider-unaware OpenRouter fallback.
-
-## 2026-05-09 — Multi-agent coding roster and Kanban hardening
-
-### Profiles
-
-- `riqui`: DeepSeek v4-flash, surgical Kanban worker.
-- `miki`: Kimi K2.6 via `kimi-coding` OAuth.
-- `maxi`: MiniMax provider, Anthropic Messages endpoint.
-- `compaii`: architecture/research profile.
-
-### Kanban fixes
-
-- Kanban worker tasks require explicit `toolsets` in task specs.
-- `kanban review create` flow validated end-to-end.
-- Auto-specify triage was added for malformed task specs.
-- Dispatcher self-spawn risk remains important: tasks assigned to the gateway's own profile must stay in `todo`/`triage` until intentionally claimed.
-
-## 2026-05-08 — Upstream sync v2026.5.7
-
-- Rebased fork work onto upstream main at the time.
-- Preserved local fork features.
-- Split gateway service handling between CompAII and profile-specific gateway instances.
+1. feat/kimi-oauth-clean — Kimi OAuth refresh, header fixes
+2. feat/altermundi-tui — TUI scrollbar, max lines config
+3. feat/altermundi-cli — Ctrl+C priority config
+4. feat/minimax-defaults — MiniMax provider defaults
+5. feat/compression-config-reboot — Configurable compression protect_first_n
+6. feat/dc-112-daemoncraft-gateway — Gateway adapter wiring, tool_choice propagation
+7. DC-99 — Profile system prompt override per platform
+8. DC-123 — TTS fixes + wake-up logging, CycleDetector
+9. DC-132 — Contextvars-based endpoint resolution, turn metrics
+10. DC-134 — Configurable turn wall-clock timeout + per-profile max_iterations

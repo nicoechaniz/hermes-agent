@@ -1154,6 +1154,25 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["requested_provider"] == "nous"
 
 
+def test_disabled_named_custom_provider_is_not_compatibility_fallback(monkeypatch):
+    """Disabled modern entries stay unavailable through the legacy projection."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "route-key": {
+                    "name": "Route Key",
+                    "api": "https://disabled.example/v1",
+                    "enabled": False,
+                }
+            }
+        },
+    )
+
+    assert rp._get_named_custom_provider("custom:route-key") is None
+
+
 def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
     stale_token = _fake_invoke_jwt(ttl_seconds=-60)
     fresh_token = _fake_invoke_jwt(ttl_seconds=3600)
@@ -1195,6 +1214,45 @@ def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
     assert resolved["provider"] == "nous"
     assert resolved["api_key"] == fresh_token
     assert resolved["base_url"] == "https://inference.pool.example/v1"
+
+
+def test_kimi_runtime_uses_cli_oauth_when_api_key_missing(monkeypatch):
+    """Kimi Coding must use ~/.kimi OAuth credentials when available.
+
+    Regression guard for the fork patch: resolve_api_key_provider_credentials()
+    now centralizes OAuth resolution, so the runtime provider receives the
+    OAuth token directly instead of falling through to no-key-required (which
+    drops Kimi's required X-Msh headers and causes 404s).
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "kimi-coding",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "default": "kimi-k2.6",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "oauth-token",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "source": "kimi-cli-oauth",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["api_key"] == "oauth-token"
+    assert resolved["source"] == "kimi-cli-oauth"
+    assert resolved["base_url"] == "https://api.kimi.com/coding/v1"
+    assert resolved["api_mode"] == "chat_completions"
 
 
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
@@ -3461,7 +3519,9 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
         },
     )
 
-    resolved = rp._resolve_named_custom_runtime(requested_provider="custom:lmstudio")
+    # Exercise the public resolver: it is responsible for preserving the
+    # original named identity after the pool path canonicalizes to "custom".
+    resolved = rp.resolve_runtime_provider(requested="custom:lmstudio")
 
     assert resolved is not None
     assert resolved["extra_headers"] == {
@@ -3470,3 +3530,5 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+    assert resolved["provider"] == "custom"
+    assert resolved["requested_provider"] == "custom:lmstudio"

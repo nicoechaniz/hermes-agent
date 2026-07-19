@@ -89,6 +89,22 @@ class TestResolveDisplayContextLength:
             )
         assert ctx == 128_000
 
+    def test_kimi_k3_short_alias_uses_kimi_coding_context(self):
+        """The Kimi Code ``k3`` alias has a 1M window, not the 256K fallback."""
+        from agent import model_metadata as mm
+
+        with patch.object(mm, "get_cached_context_length", return_value=None), \
+             patch.object(mm, "fetch_endpoint_model_metadata", return_value={}), \
+             patch.object(mm, "fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            ctx = resolve_display_context_length(
+                "k3",
+                "kimi-for-coding",
+                base_url="https://api.kimi.com/coding/v1",
+            )
+
+        assert ctx == 1_048_576
+
     def test_custom_providers_override_honored(self):
         """Regression for #15779: /model switch onto a custom provider must
         surface the configured per-model context_length, not the 128K/256K
@@ -173,3 +189,21 @@ class TestResolveDisplayContextLength:
             "The fix ensures custom_providers is passed so per-model overrides "
             "are honored."
         )
+
+    def test_global_context_is_scoped_to_configured_route(self):
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=256_000,
+        ) as resolver:
+            ctx = resolve_display_context_length(
+                "shared-model",
+                "custom",
+                base_url="https://small.example/v1",
+                config_context_length=1_048_576,
+                configured_model="shared-model",
+                configured_provider="custom",
+                configured_base_url="https://large.example/v1",
+            )
+
+        assert ctx == 256_000
+        assert resolver.call_args.kwargs["config_context_length"] is None

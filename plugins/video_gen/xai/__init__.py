@@ -23,6 +23,7 @@ import base64
 import logging
 import mimetypes
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,6 +53,10 @@ DEFAULT_RESOLUTION = "720p"
 DEFAULT_TIMEOUT_SECONDS = 240
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_EXTEND_DURATION = 6
+_TRANSIENT_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_SUBMIT_RETRY_ATTEMPTS = 6
+_RETRY_INITIAL_DELAY_SECONDS = 2
+_RETRY_MAX_DELAY_SECONDS = 30
 
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
@@ -311,19 +316,36 @@ async def _submit(
     base_url: str,
     endpoint: str = "generations",
 ) -> str:
-    """POST to one of xAI's async video endpoints and return request_id."""
-    response = await client.post(
-        f"{base_url}/videos/{endpoint}",
-        headers={**_xai_headers(api_key), "x-idempotency-key": str(uuid.uuid4())},
-        json=payload,
-        timeout=60,
-    )
-    response.raise_for_status()
-    body = response.json()
-    request_id = body.get("request_id")
-    if not request_id:
-        raise RuntimeError("xAI video response did not include request_id")
-    return request_id
+    """POST to xAI, preserving idempotency across transient retries."""
+    idempotency_key = str(uuid.uuid4())
+    for attempt in range(_SUBMIT_RETRY_ATTEMPTS):
+        try:
+            response = await client.post(
+                f"{base_url}/videos/{endpoint}",
+                headers={**_xai_headers(api_key), "x-idempotency-key": idempotency_key},
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            body = response.json()
+            request_id = body.get("request_id")
+            if not request_id:
+                raise RuntimeError("xAI video response did not include request_id")
+            return request_id
+        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+            if not _is_transient_xai_error(exc) or attempt == _SUBMIT_RETRY_ATTEMPTS - 1:
+                raise
+            delay = _retry_delay_seconds(attempt)
+            logger.warning(
+                "xAI video submit transient failure (attempt %s/%s): %s; retrying in %ss",
+                attempt + 1,
+                _SUBMIT_RETRY_ATTEMPTS,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise AssertionError("unreachable")
 
 
 async def _poll(
@@ -335,15 +357,37 @@ async def _poll(
     timeout_seconds: int,
     poll_interval: int,
 ) -> Dict[str, Any]:
-    elapsed = 0.0
+    deadline = time.monotonic() + timeout_seconds
     last_status = "queued"
-    while elapsed < timeout_seconds:
-        response = await client.get(
-            f"{base_url}/videos/{request_id}",
-            headers=_xai_headers(api_key),
-            timeout=30,
-        )
-        response.raise_for_status()
+    transient_failures = 0
+    while time.monotonic() < deadline:
+        try:
+            response = await client.get(
+                f"{base_url}/videos/{request_id}",
+                headers=_xai_headers(api_key),
+                timeout=30,
+            )
+            response.raise_for_status()
+        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+            if not _is_transient_xai_error(exc):
+                raise
+            delay = min(
+                _retry_delay_seconds(transient_failures),
+                max(0.0, deadline - time.monotonic()),
+            )
+            if delay <= 0:
+                break
+            transient_failures += 1
+            logger.warning(
+                "xAI video poll transient failure for %s: %s; retrying in %ss",
+                request_id,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        transient_failures = 0
         body = response.json()
         last_status = (body.get("status") or "").lower()
 
@@ -352,10 +396,24 @@ async def _poll(
         if last_status in {"failed", "error", "expired", "cancelled"}:
             return {"status": last_status, "body": body}
 
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
+        await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
     return {"status": "timeout", "body": {"status": last_status}}
+
+
+def _is_transient_xai_error(exc: Exception) -> bool:
+    """Return whether an xAI async-video failure is safe to retry."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        return response is not None and response.status_code in _TRANSIENT_HTTP_STATUS_CODES
+    return False
+
+
+def _retry_delay_seconds(attempt: int) -> int:
+    """Return a capped exponential retry delay for a zero-based attempt."""
+    return min(_RETRY_INITIAL_DELAY_SECONDS * (2 ** attempt), _RETRY_MAX_DELAY_SECONDS)
 
 
 # ---------------------------------------------------------------------------

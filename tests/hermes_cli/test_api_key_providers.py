@@ -15,9 +15,11 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    KIMI_CODE_CLI_USER_AGENT,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
+    kimi_coding_default_headers,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
@@ -147,19 +149,27 @@ class TestProviderRegistry:
 # Provider Resolution tests
 # =============================================================================
 
-PROVIDER_ENV_VARS = (
-    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "LM_API_KEY", "LM_BASE_URL",
-    "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-    "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
-    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
-    "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
-    "GMI_API_KEY", "GMI_BASE_URL",
-    "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
-    "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
-    "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
+# Derived from the live PROVIDER_REGISTRY so the list can never drift when a
+# new provider (and its env var) is added — a hand-maintained tuple here was
+# missing HF_TOKEN/DEEPINFRA_API_KEY, which made the auto-detection tests
+# env-dependent (they failed on any machine with HF_TOKEN exported).
+from hermes_cli.auth import PROVIDER_REGISTRY as _REGISTRY
+
+_EXTRA_ENV_VARS = (
+    # Checked directly in resolve_provider("auto"), not via the registry.
+    "OPENROUTER_API_KEY", "NOUS_API_KEY",
+    # Base URLs / paths that influence detection but aren't api_key_env_vars.
+    "LM_BASE_URL", "KIMI_BASE_URL", "STEPFUN_BASE_URL", "KILOCODE_BASE_URL",
+    "GMI_BASE_URL", "OPENAI_BASE_URL",
+    "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+)
+
+PROVIDER_ENV_VARS = tuple(
+    dict.fromkeys(
+        [var for cfg in _REGISTRY.values() for var in cfg.api_key_env_vars]
+        + list(_EXTRA_ENV_VARS)
+    )
 )
 
 
@@ -981,6 +991,16 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+def test_kimi_oauth_headers_advertise_official_cli(monkeypatch):
+    """Inherited Kimi OAuth must be attributed to the Kimi Code plan."""
+    monkeypatch.setattr("hermes_cli.auth._kimi_cli_version", lambda: "9.9.9")
+
+    headers = kimi_coding_default_headers()
+
+    assert headers["User-Agent"] == f"{KIMI_CODE_CLI_USER_AGENT}/9.9.9"
+    assert headers["X-Msh-Platform"] == "kimi_cli"
 
 
 class TestZaiEndpointAutoDetect:
