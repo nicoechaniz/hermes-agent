@@ -324,6 +324,14 @@ TOOLSETS = {
         "includes": []
     },
 
+    "altermundi": {
+        "description": "Read-only access to AlterMundi collective memory over anyVPN",
+        "tools": [
+            "altermundi_search", "altermundi_doc",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

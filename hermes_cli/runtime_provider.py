@@ -488,6 +488,37 @@ def _resolve_runtime_from_pool_entry(
         if configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
+                # Guard against a stale model.base_url left behind by a
+                # provider switch: config.yaml persists model.provider but
+                # historically kept the previous provider's model.base_url,
+                # pairing this provider with the old endpoint (auth errors
+                # against the wrong host).  When the URL is known to belong
+                # to a *different* provider, ignore it.  Unknown hosts
+                # (custom endpoints, proxies) are still honoured.
+                _cfg_url_owner = None
+                try:
+                    from agent.model_metadata import _infer_provider_from_url
+
+                    _cfg_url_owner = _infer_provider_from_url(cfg_base_url)
+                except Exception:
+                    _cfg_url_owner = None
+                if _cfg_url_owner:
+                    try:
+                        _owner_norm = resolve_provider(_cfg_url_owner)
+                        _provider_norm = resolve_provider(provider)
+                    except Exception:
+                        _owner_norm, _provider_norm = _cfg_url_owner, provider
+                    if _owner_norm and _provider_norm and _owner_norm != _provider_norm:
+                        logger.warning(
+                            "Ignoring stale model.base_url %r (belongs to provider "
+                            "%r) while resolving provider %r; using the provider's "
+                            "default endpoint instead",
+                            cfg_base_url,
+                            _cfg_url_owner,
+                            provider,
+                        )
+                        cfg_base_url = ""
+            if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if provider in {"opencode-zen", "opencode-go"}:

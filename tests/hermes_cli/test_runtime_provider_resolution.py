@@ -1637,6 +1637,60 @@ def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
+def test_stale_model_base_url_from_provider_switch_is_ignored(monkeypatch):
+    """Regression: a /model switch persists model.provider but used to leave
+    the previous provider's model.base_url behind. On the next startup the
+    configured provider matched the requested one, so the stale URL was
+    honoured — pairing the new provider with the old endpoint (deepseek +
+    api.kimi.com → 401 loop, 2026-07-18). The resolver must ignore a
+    model.base_url that is known to belong to a *different* provider.
+    """
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek",
+        "default": "deepseek-v4-pro",
+        "base_url": "https://api.kimi.com/coding/v1",
+    })
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["provider"] == "deepseek"
+    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+
+
+def test_model_base_url_unknown_host_still_honoured(monkeypatch):
+    """The stale-URL guard must not break legitimate custom endpoints:
+    a model.base_url whose host belongs to no known provider (proxies,
+    relays, loopback shims) is still honoured for the configured provider.
+    """
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek",
+        "base_url": "http://127.0.0.1:8800/v1",
+    })
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["base_url"] == "http://127.0.0.1:8800/v1"
+
+
+def test_model_base_url_honoured_when_owner_matches_provider(monkeypatch):
+    """A model.base_url that belongs to the *same* provider keeps working —
+    the guard only rejects cross-provider URLs."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "kimi-coding",
+        "base_url": "https://api.kimi.com/coding/v1",
+    })
+    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
+    monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["base_url"] == "https://api.kimi.com/coding/v1"
+
+
 def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
     """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
