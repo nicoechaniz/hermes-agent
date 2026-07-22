@@ -6063,6 +6063,20 @@ def refresh_agent_mcp_tools(
     )
     new_names = {t["function"]["name"] for t in new_defs}
 
+    # Match agent_init's native-memory gate: when both MEMORY.md and USER.md
+    # stores are disabled, the built-in `memory` tool must stay out of the
+    # model schema (HMK-first profiles). Provider tools reinject separately.
+    try:
+        from agent.memory_manager import (
+            filter_native_memory_tool,
+            native_memory_stores_enabled,
+        )
+
+        if not native_memory_stores_enabled(agent):
+            new_defs = list(filter_native_memory_tool(new_defs, new_names) or [])
+    except Exception:
+        logger.debug("Native memory tool gate skipped on MCP refresh", exc_info=True)
+
     # Re-append the post-build injected families that get_tool_definitions does
     # NOT reproduce, so a refresh never strips them (memory-provider + context-
     # engine tools). Staged entirely on LOCALS — the live ``agent.tools`` /

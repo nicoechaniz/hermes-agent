@@ -98,6 +98,69 @@ def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool
         return False
 
 
+def native_memory_stores_enabled(agent: Any) -> bool:
+    """True when either built-in MEMORY.md or USER.md store is active for *agent*."""
+    return bool(
+        getattr(agent, "_memory_enabled", False)
+        or getattr(agent, "_user_profile_enabled", False)
+    )
+
+
+def filter_native_memory_tool(
+    tools: Optional[List[Dict[str, Any]]],
+    valid_tool_names: Optional[set] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Remove the built-in ``memory`` tool from a tools list / name set.
+
+    Leaves every other tool untouched — including external memory-provider
+    tools (e.g. ``librarian``) that share the memory *toolset* but are not
+    the native MEMORY.md/USER.md handler. Returns *tools* unchanged when the
+    native tool is absent.
+    """
+    if valid_tool_names is not None:
+        valid_tool_names.discard("memory")
+    if not tools:
+        return tools
+
+    filtered: List[Dict[str, Any]] = []
+    removed = False
+    for tool in tools:
+        name = None
+        if isinstance(tool, dict):
+            fn = tool.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name")
+        if name == "memory":
+            removed = True
+            continue
+        filtered.append(tool)
+    return filtered if removed else tools
+
+
+def apply_native_memory_tool_gate(agent: Any) -> bool:
+    """Drop built-in ``memory`` from the agent schema when both native stores are off.
+
+    HMK-first profiles set ``memory.memory_enabled`` and
+    ``memory.user_profile_enabled`` false while keeping an external provider.
+    The memory *toolset* stays enabled so provider tools still inject via
+    :func:`inject_memory_provider_tools`; only the built-in MEMORY.md/USER.md
+    tool is removed from the model-facing schema.
+
+    Returns True when the native tool was stripped (or would have been absent
+    already because both stores are disabled).
+    """
+    if native_memory_stores_enabled(agent):
+        return False
+
+    tools = getattr(agent, "tools", None)
+    names = getattr(agent, "valid_tool_names", None)
+    name_set = names if isinstance(names, set) else None
+    filtered = filter_native_memory_tool(tools, name_set)
+    if filtered is not tools and tools is not None:
+        agent.tools = filtered
+    return True
+
+
 def inject_memory_provider_tools(agent: Any) -> int:
     """Append external memory-provider tool schemas to an agent tool surface."""
     memory_manager = getattr(agent, "_memory_manager", None)

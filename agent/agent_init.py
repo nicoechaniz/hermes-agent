@@ -1684,7 +1684,14 @@ def init_agent(
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
+    # HMK-first / native-store-disabled profiles: hide the built-in `memory`
+    # tool (MEMORY.md / USER.md) from the model schema while leaving the
+    # memory toolset itself intact so external provider tools still inject.
+    from agent.memory_manager import (
+        apply_native_memory_tool_gate as _apply_native_memory_tool_gate,
+        inject_memory_provider_tools as _inject_memory_provider_tools,
+    )
+    _apply_native_memory_tool_gate(agent)
     _inject_memory_provider_tools(agent)
 
     # Skills config: nudge interval for skill creation reminders

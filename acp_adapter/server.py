@@ -832,7 +832,10 @@ class HermesACPAgent(acp.Agent):
 
         try:
             from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager import (
+                apply_native_memory_tool_gate,
+                inject_memory_provider_tools,
+            )
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
@@ -848,6 +851,7 @@ class HermesACPAgent(acp.Agent):
             state.agent.valid_tool_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
+            apply_native_memory_tool_gate(state.agent)
             inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
@@ -1914,7 +1918,10 @@ class HermesACPAgent(acp.Agent):
         try:
             from model_tools import get_tool_definitions
             from types import SimpleNamespace
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager import (
+                apply_native_memory_tool_gate,
+                inject_memory_provider_tools,
+            )
 
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
@@ -1929,7 +1936,12 @@ class HermesACPAgent(acp.Agent):
                 },
                 enabled_toolsets=toolsets,
                 _memory_manager=getattr(state.agent, "_memory_manager", None),
+                _memory_enabled=getattr(state.agent, "_memory_enabled", False),
+                _user_profile_enabled=getattr(
+                    state.agent, "_user_profile_enabled", False
+                ),
             )
+            apply_native_memory_tool_gate(tool_view)
             inject_memory_provider_tools(tool_view)
             tools = tool_view.tools
             if not tools:
