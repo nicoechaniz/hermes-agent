@@ -14501,19 +14501,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     terminal_columns = get_app().output.get_size().columns
                 except Exception:
                     terminal_columns = shutil.get_terminal_size((80, 24)).columns
-                available_width = terminal_columns - prompt_width
-                if available_width < 10:
-                    available_width = 40
-                visual_lines = 0
-                for line in doc.lines:
-                    # Each logical line takes at least 1 visual row; long lines wrap.
-                    # Use prompt_toolkit's cell width so CJK wide characters count as 2.
-                    line_width = get_cwidth(line)
-                    if line_width <= 0:
-                        visual_lines += 1
-                    else:
-                        visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), _input_max_lines)
+                prompt_text = "".join(text for _, text in get_prompt())
+                return _estimate_tui_input_height(
+                    doc.lines,
+                    prompt_text,
+                    terminal_columns,
+                    max_height=_input_max_lines,
+                )
             except Exception:
                 return 1
 
