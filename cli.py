@@ -14655,9 +14655,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     terminal_columns = get_app().output.get_size().columns
                 except Exception:
                     terminal_columns = shutil.get_terminal_size((80, 24)).columns
+                prompt_text = "".join(text for _, text in get_prompt())
                 return _estimate_tui_input_height(
                     doc.lines,
-                    self._get_tui_prompt_text(),
+                    prompt_text,
                     terminal_columns,
                     max_height=_input_max_lines,
                 )
