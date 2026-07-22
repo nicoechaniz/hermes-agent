@@ -140,6 +140,31 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert added == {"mcp_new_server_tool"}
 
 
+def test_refresh_removes_disabled_native_memory_but_keeps_provider_tools(monkeypatch):
+    """An MCP refresh cannot reintroduce native memory on an HMK-first agent."""
+    agent = _agent(["read_file", "memory", "librarian"])
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "librarian", "description": "", "parameters": {}}
+        ]
+    )
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("memory"), _tool("mcp_new_tool")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert agent.valid_tool_names == {"read_file", "librarian", "mcp_new_tool"}
+    assert "memory" not in agent.valid_tool_names
+    assert any(tool["function"]["name"] == "librarian" for tool in agent.tools)
+
+
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     """#5544: context-engine tools must NOT be re-injected on a restricted
     toolset. A platform with enabled_toolsets that excludes context_engine
