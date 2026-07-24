@@ -197,7 +197,11 @@ class DaemonCraftAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # DaemonCraft has no server-side message queue to preserve.  Accept the
+        # base-adapter reconnect contract so GatewayRunner can use the same
+        # reconnect path for every platform.
+        del is_reconnect
         if not self._bot_api_url:
             logger.error("[DaemonCraft] bot_api_url missing in platform config extra")
             return False
