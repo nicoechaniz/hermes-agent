@@ -153,7 +153,8 @@ class TestAdapterCycleDetectorInit:
         # Patch connect internals so no actual socket is opened
         with patch("gateway.platforms.daemoncraft.aiohttp.ClientSession", return_value=MagicMock()), \
              patch("asyncio.create_task", return_value=MagicMock()):
-            await adapter.connect()
+            connected = await adapter.connect(is_reconnect=True)
+        assert connected is True
         assert adapter._cycle_detector is None
 
     @pytest.mark.anyio
