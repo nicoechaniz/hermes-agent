@@ -1963,6 +1963,7 @@ def _model_flow_kimi(config, current_model=""):
             break
 
     oauth_available = False
+    oauth_api_key = ""
     if not existing_key:
         try:
             oauth_creds = resolve_kimi_coding_runtime_credentials()
@@ -1971,7 +1972,8 @@ def _model_flow_kimi(config, current_model=""):
                 "kimi-cli-oauth-refresh",
             }
             if oauth_available:
-                print(f"  {pconfig.name} OAuth: {oauth_creds['auth_file']} ✓")
+                oauth_api_key = str(oauth_creds.get("api_key") or "")
+                print(f"  {pconfig.name} OAuth: {oauth_creds.get('auth_file', 'Kimi CLI')} ✓")
                 print()
         except Exception:
             pass
@@ -2008,7 +2010,7 @@ def _model_flow_kimi(config, current_model=""):
             current_model=current_model,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
-            confirm_api_key=existing_key,
+            confirm_api_key=oauth_api_key or existing_key,
         )
     else:
         try:
