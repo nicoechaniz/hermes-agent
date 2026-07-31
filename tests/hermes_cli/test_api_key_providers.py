@@ -19,6 +19,9 @@ from hermes_cli.auth import (
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
+    _kimi_cli_credentials_path,
+    _kimi_cli_device_id_path,
+    _read_kimi_cli_credentials,
     kimi_coding_default_headers,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
@@ -983,6 +986,46 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+class TestKimiCodeCliPaths:
+    """Support the current Kimi Code home without abandoning legacy installs."""
+
+    def test_current_credentials_take_precedence(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        current = tmp_path / ".kimi-code" / "credentials" / "kimi-code.json"
+        legacy = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
+        current.parent.mkdir(parents=True)
+        legacy.parent.mkdir(parents=True)
+        current.write_text(json.dumps({"access_token": "current"}))
+        legacy.write_text(json.dumps({"access_token": "legacy"}))
+
+        assert _kimi_cli_credentials_path() == current
+        assert _kimi_cli_device_id_path() == tmp_path / ".kimi-code" / "device_id"
+        assert _read_kimi_cli_credentials()["access_token"] == "current"
+
+    def test_legacy_credentials_remain_supported(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        legacy = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"access_token": "legacy"}))
+
+        assert _kimi_cli_credentials_path() == legacy
+        assert _kimi_cli_device_id_path() == tmp_path / ".kimi" / "device_id"
+        assert _read_kimi_cli_credentials()["access_token"] == "legacy"
+
+    def test_kimi_code_home_override_is_honored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        custom_home = tmp_path / "custom-kimi"
+        monkeypatch.setenv("KIMI_CODE_HOME", str(custom_home))
+        legacy = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"access_token": "legacy"}))
+
+        assert _kimi_cli_credentials_path() == (
+            custom_home / "credentials" / "kimi-code.json"
+        )
+        assert _kimi_cli_device_id_path() == custom_home / "device_id"
 
 
 def test_kimi_oauth_headers_advertise_official_cli(monkeypatch):

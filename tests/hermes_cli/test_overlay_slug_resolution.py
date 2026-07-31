@@ -72,7 +72,7 @@ def test_kimi_for_coding_overlay_uses_hermes_slug():
 def test_kimi_cli_oauth_file_makes_picker_provider_visible(tmp_path, monkeypatch):
     """/model picker should show kimi-coding when only Kimi CLI OAuth exists."""
     home = tmp_path
-    cred_dir = home / ".kimi" / "credentials"
+    cred_dir = home / ".kimi-code" / "credentials"
     cred_dir.mkdir(parents=True)
     (cred_dir / "kimi-code.json").write_text(
         json.dumps({"access_token": "oauth-token", "refresh_token": "refresh-token"}),
@@ -92,6 +92,29 @@ def test_kimi_cli_oauth_file_makes_picker_provider_visible(tmp_path, monkeypatch
     assert kimi is not None, "kimi-coding should appear when Kimi CLI OAuth exists"
     assert kimi["models"] == ["kimi-for-coding"]
     assert kimi["is_current"] is True
+
+
+def test_legacy_kimi_cli_oauth_file_still_makes_picker_visible(tmp_path, monkeypatch):
+    """Retired Python CLI credentials remain a supported fallback."""
+    home = tmp_path
+    cred_dir = home / ".kimi" / "credentials"
+    cred_dir.mkdir(parents=True)
+    (cred_dir / "kimi-code.json").write_text(
+        json.dumps({"access_token": "oauth-token", "refresh_token": "refresh-token"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda slug: ["kimi-for-coding"] if slug == "kimi-coding" else [],
+    )
+
+    providers = list_authenticated_providers(current_provider="kimi-coding")
+
+    kimi = next((p for p in providers if p["slug"] == "kimi-coding"), None)
+    assert kimi is not None
 
 
 @patch.dict(os.environ, {"KILOCODE_API_KEY": "fake-key"}, clear=False)
