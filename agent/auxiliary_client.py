@@ -332,8 +332,17 @@ OMIT_TEMPERATURE: object = object()
 
 def _is_kimi_model(model: Optional[str]) -> bool:
     """True for any Kimi / Moonshot model that manages temperature server-side."""
-    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return bare.startswith("kimi-") or bare == "kimi"
+    from agent.moonshot_schema import is_moonshot_model
+
+    return is_moonshot_model(model)
+
+
+def _is_kimi_endpoint(base_url: Optional[str]) -> bool:
+    """True for official Kimi / Moonshot API hosts, regardless of model alias."""
+    return any(
+        base_url_host_matches(base_url or "", domain)
+        for domain in ("api.kimi.com", "moonshot.ai", "moonshot.cn")
+    )
 
 
 def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
@@ -424,8 +433,12 @@ def _fixed_temperature_for_model(
             models with fixed-temperature contracts).
         ``None`` — no override; caller should use its own default.
     """
-    if _is_kimi_model(model):
-        logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+    if _is_kimi_model(model) or _is_kimi_endpoint(base_url):
+        logger.debug(
+            "Omitting temperature for Kimi route model=%r base_url=%r (server-managed)",
+            model,
+            base_url,
+        )
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5

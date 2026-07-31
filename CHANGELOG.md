@@ -8,6 +8,8 @@
   `~/.kimi-code`, honors `KIMI_CODE_HOME`, and keeps the retired `~/.kimi`
   location as a coherent credentials-and-device fallback.
 - The `/model` provider picker uses the same path resolver as runtime auth.
+- Auxiliary calls now recognize K3 aliases and official Kimi/Moonshot endpoints,
+  preventing title generation from sending an unsupported `temperature` value.
 
 ## 2026-05-16 — mc_bit Tool Fix
 
