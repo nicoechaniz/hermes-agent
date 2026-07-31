@@ -1955,16 +1955,16 @@ def list_authenticated_providers(
             except Exception:
                 pass
         # Kimi Coding can be authenticated by `kimi login` instead of an API key.
-        # Its OAuth token lives in ~/.kimi/credentials/kimi-code.json and is
-        # refreshed at runtime by resolve_kimi_coding_runtime_credentials(). The
-        # picker is discovery-oriented, so the presence of a token file is enough
-        # to surface the provider even when KIMI_API_KEY is unset.
+        # Current Kimi Code uses ~/.kimi-code while the retired Python CLI used
+        # ~/.kimi. The auth resolver owns that compatibility decision. The picker
+        # is discovery-oriented, so the presence of a token file is enough to
+        # surface the provider even when KIMI_API_KEY is unset.
         if not has_creds and hermes_id == "kimi-coding":
             try:
                 import json
-                from pathlib import Path
+                from hermes_cli.auth import _kimi_cli_credentials_path
 
-                cred_path = Path.home() / ".kimi" / "credentials" / "kimi-code.json"
+                cred_path = _kimi_cli_credentials_path()
                 data = json.loads(cred_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and (
                     data.get("access_token") or data.get("refresh_token")

@@ -555,12 +555,32 @@ KIMI_CODE_OAUTH_HOST = "https://auth.kimi.com"
 KIMI_CODE_CLI_USER_AGENT = "kimi-code-cli"
 
 
+def _kimi_code_home() -> Path:
+    """Return the current Kimi Code home, honoring its documented override."""
+    configured = os.getenv("KIMI_CODE_HOME", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".kimi-code"
+
+
+def _kimi_cli_store_home() -> Path:
+    """Choose one coherent Kimi credential store, preferring the current CLI."""
+    current_home = _kimi_code_home()
+    if os.getenv("KIMI_CODE_HOME", "").strip():
+        return current_home
+
+    legacy_home = Path.home() / ".kimi"
+    current_credentials = current_home / "credentials" / "kimi-code.json"
+    legacy_credentials = legacy_home / "credentials" / "kimi-code.json"
+    if current_credentials.exists() or not legacy_credentials.exists():
+        return current_home
+    return legacy_home
+
+
 def _kimi_cli_credentials_path() -> Path:
-    return Path.home() / ".kimi" / "credentials" / "kimi-code.json"
+    return _kimi_cli_store_home() / "credentials" / "kimi-code.json"
 
 
 def _kimi_cli_device_id_path() -> Path:
-    return Path.home() / ".kimi" / "device_id"
+    return _kimi_cli_store_home() / "device_id"
 
 
 def _kimi_cli_version() -> str:

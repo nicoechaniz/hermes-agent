@@ -2,6 +2,13 @@
 
 > **Provider note:** Profile configs reference DeepSeek, Kimi, and MiniMax providers because that's our stack. Team members using different providers (OpenRouter, Anthropic, Nous, etc.) should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` (or symlink to shared `.env`). The `max_turns` and `reasoning_effort` values are provider-agnostic and should work across backends.
 
+## 2026-07-31 — Current Kimi Code OAuth Store
+
+- Hermes now prefers OAuth credentials created by the current Kimi Code CLI in
+  `~/.kimi-code`, honors `KIMI_CODE_HOME`, and keeps the retired `~/.kimi`
+  location as a coherent credentials-and-device fallback.
+- The `/model` provider picker uses the same path resolver as runtime auth.
+
 ## 2026-05-16 — mc_bit Tool Fix
 
 ### Synchronous mc_bit Handler
