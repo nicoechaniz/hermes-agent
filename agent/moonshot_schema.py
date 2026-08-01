@@ -232,6 +232,11 @@ def is_moonshot_model(model: str | None) -> bool:
     tail = bare.rsplit("/", 1)[-1]
     if tail.startswith("kimi-") or tail == "kimi":
         return True
+    # Kimi Coding Plan exposes K3 as a bare slug rather than a ``kimi-*``
+    # name. Keep the canonical Kimi lane self-contained so rebuilding the
+    # integration branch cannot reintroduce unsupported sampling parameters.
+    if tail == "k3" or tail.startswith(("k3.", "k3-")):
+        return True
     # Vendor-prefixed forms commonly used on aggregators
     if "moonshot" in bare or "/kimi" in bare or bare.startswith("kimi"):
         return True
