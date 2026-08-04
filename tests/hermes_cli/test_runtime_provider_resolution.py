@@ -731,6 +731,7 @@ def test_kimi_runtime_uses_cli_oauth_when_api_key_missing(monkeypatch):
         "_get_model_config",
         lambda: {
             "provider": "kimi-coding",
+            # Existing fork configs may still store the OpenAI-wire URL.
             "base_url": "https://api.kimi.com/coding/v1",
             "default": "kimi-k2.6",
         },

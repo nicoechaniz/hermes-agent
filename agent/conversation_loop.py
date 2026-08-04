@@ -3511,10 +3511,15 @@ def run_conversation(
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
                 if thinking_spinner:
-                    thinking_spinner.stop("")
+                    thinking_spinner.stop("(╥_╥) error, retrying...")
                     thinking_spinner = None
                 if agent.thinking_callback:
                     agent.thinking_callback("")
+
+                # Defensive: log full traceback for TypeError so we can diagnose
+                # 'NoneType object is not iterable' crashes in Codex path.
+                if isinstance(api_error, TypeError):
+                    logger.error("TypeError in API call path", exc_info=True)
 
                 # -----------------------------------------------------------
                 # UnicodeEncodeError recovery.  Two common causes:
@@ -4013,15 +4018,6 @@ def run_conversation(
                     _retry.kimi_auth_retry_attempted = True
                     if agent._try_refresh_kimi_client_credentials(force=True):
                         agent._vprint(f"{agent.log_prefix}🔐 Kimi credentials refreshed after 401. Retrying request...")
-                        continue
-                if (
-                    agent.provider in {"kimi-coding", "kimi-coding-cn"}
-                    and status_code == 401
-                    and not _retry.kimi_auth_retry_attempted
-                ):
-                    _retry.kimi_auth_retry_attempted = True
-                    if agent._try_refresh_kimi_client_credentials(force=True):
-                        agent._buffer_vprint("🔐 Kimi credentials refreshed after 401. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "anthropic_messages"

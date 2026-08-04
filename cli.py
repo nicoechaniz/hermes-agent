@@ -14366,9 +14366,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             all_parts.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
+
+                # Normalize multimodal payloads: (text, images) tuples come from
+                # interrupt messages that contain pasted/attached images.
+                # Split text and images so we can combine text with join while
+                # preserving image attachments.
+                texts = []
+                images = []
+                for part in all_parts:
+                    if isinstance(part, tuple):
+                        texts.append(str(part[0]) if part else "")
+                        if len(part) > 1:
+                            images.extend(part[1])
+                    else:
+                        texts.append(str(part))
+
+                combined = ("\n".join(texts), images) if images else "\n".join(texts)
                 n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
+                preview = "\n".join(texts)[:50] + ("..." if len("\n".join(texts)) > 50 else "")
                 if n > 1:
                     print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
                 else:
@@ -15745,6 +15760,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             move()
             if buf.text == before:
                 self._skip_paste_collapse = False
+        _history_nav_requires_empty = bool(CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False))
 
         _history_nav_requires_empty = bool(CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False))
 
@@ -15753,6 +15769,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """Up arrow: browse history when on first line, else move cursor up."""
             buf = event.app.current_buffer
             _recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
+            if _history_nav_requires_empty and event.app.current_buffer.text:
+                return
+            _recall_without_recollapse(event.app.current_buffer, lambda: event.app.current_buffer.auto_up(count=event.arg))
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
@@ -16316,6 +16335,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     terminal_columns,
                     max_height=_input_max_lines,
                 )
+
             except Exception:
                 return 1
 
@@ -17385,6 +17405,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                    _show_full_input = bool(CLI_CONFIG.get("tui", {}).get("show_full_input", False))
+                    _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
+                    print()
+                    ChatConsole().print(_user_bar)
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
                     print()
