@@ -789,6 +789,175 @@ def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_minimax_env_base_url_still_wins_over_config(monkeypatch):
+    """MINIMAX_BASE_URL env var should take priority over config.yaml model.base_url."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "minimax",
+        "base_url": "https://api.minimaxi.com/anthropic",
+    })
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://custom.example.com/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    # Env var wins because resolve_api_key_provider_credentials prefers it
+    assert resolved["base_url"] == "https://custom.example.com/v1"
+
+
+def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
+    """model.base_url should NOT be used when model.provider doesn't match."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openrouter",
+        "base_url": "https://some-other-endpoint.com/v1",
+    })
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    # Should use the default, NOT the config base_url from a different provider
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_stale_model_base_url_from_provider_switch_is_ignored(monkeypatch):
+    """Regression: a /model switch persists model.provider but used to leave
+    the previous provider's model.base_url behind. On the next startup the
+    configured provider matched the requested one, so the stale URL was
+    honoured — pairing the new provider with the old endpoint (deepseek +
+    api.kimi.com → 401 loop, 2026-07-18). The resolver must ignore a
+    model.base_url that is known to belong to a *different* provider.
+    """
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek",
+        "default": "deepseek-v4-pro",
+        "base_url": "https://api.kimi.com/coding/v1",
+    })
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["provider"] == "deepseek"
+    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+
+
+def test_model_base_url_unknown_host_still_honoured(monkeypatch):
+    """The stale-URL guard must not break legitimate custom endpoints:
+    a model.base_url whose host belongs to no known provider (proxies,
+    relays, loopback shims) is still honoured for the configured provider.
+    """
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek",
+        "base_url": "http://127.0.0.1:8800/v1",
+    })
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["base_url"] == "http://127.0.0.1:8800/v1"
+
+
+def test_model_base_url_honoured_when_owner_matches_provider(monkeypatch):
+    """A model.base_url that belongs to the *same* provider keeps working —
+    the guard only rejects cross-provider URLs."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek",
+        "base_url": "https://api.deepseek.com/v1",
+    })
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+
+
+def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
+    """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba")
+
+    assert resolved["provider"] == "alibaba"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+
+def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch):
+    """Alibaba with /apps/anthropic URL override should auto-detect anthropic_messages mode."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic")
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba")
+
+    assert resolved["provider"] == "alibaba"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+
+
+def test_opencode_zen_gpt_defaults_to_responses(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "gpt-5.4"})
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["provider"] == "opencode-zen"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
+def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "claude-sonnet-4-6"})
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["provider"] == "opencode-zen"
+    assert resolved["api_mode"] == "anthropic_messages"
+    # Trailing /v1 stripped for anthropic_messages mode — the Anthropic SDK
+    # appends its own /v1/messages to the base_url.
+    assert resolved["base_url"] == "https://opencode.ai/zen"
+
+
+def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "minimax-m2.5"})
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "anthropic_messages"
+    # Trailing /v1 stripped — Anthropic SDK appends /v1/messages itself.
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"
+
+
+def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "glm-5"})
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
 def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch):
     """opencode-zen/go re-derive api_mode from the effective model on every
     resolve, ignoring any persisted ``api_mode`` in config. Refs #16878 /
