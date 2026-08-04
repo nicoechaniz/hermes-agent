@@ -4733,6 +4733,8 @@ class TurnRunner:
         agent.reasoning_config = reasoning_config
         agent.service_tier = self._runner._service_tier
         agent.request_overrides = turn_route.get("request_overrides") or {}
+        if ctx.tool_choice:
+            agent.request_overrides["tool_choice"] = ctx.tool_choice
         # Must-deliver notes for THIS turn ride the current user message
         # (api_content sidecar), never the system prompt: staged by
         # _handle_message_with_agent (auto-reset note, first-contact
@@ -10223,6 +10225,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return 0
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
                 logger.debug("Restart-loop guard check skipped: %s", exc)
+
+        # DaemonCraft lab mode is manual-control-only: do not auto-resume a
+        # stale embodied turn while the operator is observing the world.
+        # Keep this gate scoped to the DaemonCraft adapter so ordinary gateway
+        # platforms retain upstream auto-resume behavior.
+        daemoncraft_adapter = self.adapters.get(Platform.DAEMONCRAFT)
+        if daemoncraft_adapter is not None and candidates:
+            try:
+                lab_mode = True  # fail-safe when the controller is unavailable
+                bot_url = getattr(daemoncraft_adapter, "_bot_api_url", None)
+                if bot_url:
+                    import urllib.request
+                    with urllib.request.urlopen(f"{bot_url}/controller/mode", timeout=1.0) as resp:
+                        mode_data = json.loads(resp.read())
+                    lab_mode = (
+                        mode_data.get("data", {}).get("mode", "lab") == "lab"
+                        if mode_data.get("ok") else True
+                    )
+                if lab_mode:
+                    logger.info(
+                        "[gateway] DaemonCraft lab mode active or undetermined: "
+                        "skipping auto-resume of %d session(s)", len(candidates)
+                    )
+                    for entry in candidates:
+                        entry.resume_pending = False
+                    save = getattr(self.session_store, "_save", None)
+                    if callable(save):
+                        save()
+                    return 0
+            except Exception as exc:
+                logger.warning(
+                    "[gateway] DaemonCraft controller mode unavailable during auto-resume: %s; "
+                    "failing safe to lab mode",
+                    exc,
+                )
+                for entry in candidates:
+                    entry.resume_pending = False
+                save = getattr(self.session_store, "_save", None)
+                if callable(save):
+                    save()
+                return 0
 
         now = datetime.now()
         scheduled = 0
@@ -16884,6 +16927,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
+                tool_choice=getattr(event, "tool_choice", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=event.message_type,
@@ -23317,6 +23361,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
+        tool_choice: Optional[str] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
@@ -23336,6 +23381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
+                tool_choice=tool_choice,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=message_type,
@@ -23348,6 +23394,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
+                tool_choice=tool_choice,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=message_type,
@@ -23470,6 +23517,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
+        tool_choice: Optional[str] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
@@ -23735,6 +23783,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cleanup_progress=_cleanup_progress,
             _cleanup_msg_ids=_cleanup_msg_ids,
             message=message,
+            tool_choice=tool_choice,
             AIAgent=AIAgent,
             resolve_display_setting=resolve_display_setting,
             user_config=user_config,

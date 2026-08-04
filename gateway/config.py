@@ -301,6 +301,7 @@ class Platform(Enum):
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+    DAEMONCRAFT = "daemoncraft"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
