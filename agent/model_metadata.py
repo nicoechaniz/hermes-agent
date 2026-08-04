@@ -433,6 +433,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # still hit the generic 256K fallback.
     "kimi-k3": 1_048_576,
     "kimi": 262144,
+    "kimi-k2.6": 262144,
+    "kimi-k2.5": 262144,
+    "kimi-k2": 262144,
+    "k2p6": 262144,
+    "k2p5": 262144,
     # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
     # so these fallbacks keep token budgeting / compression from probing down
     # to the 128k default. Ids are matched longest-first, so dated variants
@@ -2784,7 +2789,14 @@ def get_model_context_length(
                 _maybe_cache_local_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    # 8. Provider-scoped hardcoded defaults. Kimi Code accepts the short
+    # ``k3`` alias while its catalog uses the fully qualified ``kimi-k3``
+    # identifier. Keep this scoped to Kimi: a generic "k3" substring fallback
+    # could misidentify unrelated providers' model IDs.
+    if effective_provider in {"kimi-for-coding", "kimi-coding", "kimi-coding-cn"} and model.lower() == "k3":
+        return 1_048_576
+
+    # 9. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.

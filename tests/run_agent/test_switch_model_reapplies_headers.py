@@ -61,6 +61,21 @@ def test_switch_to_openrouter_reapplies_attribution_headers(mock_ctx_len):
     assert headers.get("X-Title")
 
 
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_switch_to_kimi_reapplies_user_agent_sentinel(mock_ctx_len):
+    """Kimi requests must retain the official CLI identity after a switch."""
+    agent = _make_agent(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+
+    agent.switch_model(
+        "kimi-k2",
+        "kimi",
+        api_key="sk-kimi",
+        base_url="https://api.kimi.com/v1",
+    )
+
+    headers = agent._client_kwargs.get("default_headers") or {}
+    assert headers.get("User-Agent", "").startswith("kimi-code-cli/")
+    assert headers.get("X-Msh-Platform") == "kimi_cli"
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
