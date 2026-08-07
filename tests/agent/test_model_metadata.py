@@ -253,40 +253,47 @@ class TestDefaultContextLengths:
                     base_url=base_url,
                 ) == 1_000_000
 
-    def test_k3_context_is_scoped_to_kimi_provider(self):
-        """The short ``k3`` alias is 1 MiB only for Kimi coding providers.
-
-        Kimi's provider identity is authoritative even when an old config has
-        a missing or legacy base URL. Unrelated providers must not inherit the
-        short alias, while fully qualified ``kimi-k3`` names remain global.
-        """
+    def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
+        """Bare K3 wire IDs are scoped to the official Kimi Code endpoint."""
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
              patch("agent.models_dev.lookup_models_dev_context", return_value=None):
-            for provider in ("kimi-coding", "kimi-coding-cn"):
-                for base_url in (
-                    "",
-                    "https://api.kimi.com/coding",
-                    "https://api.kimi.com/coding/v1",
-                    "http://api.kimi.com/coding",
-                ):
+            accepted_urls = (
+                "https://api.kimi.com/coding",
+                "https://API.KIMI.COM/coding/",
+                "https://api.kimi.com:443/coding",
+                "https://api.kimi.com/coding/v1",
+            )
+            rejected_urls = (
+                "http://api.kimi.com/coding",
+                "https://api.kimi.com:8443/coding",
+                "https://api.kimi.com/coding/../other",
+                "https://api.kimi.com/codingevil",
+                "https://example.invalid/coding",
+                "https://[api.kimi.com/coding",
+                "https://api.moonshot.ai/v1",
+                "https://api.moonshot.cn/v1",
+            )
+
+            for base_url in accepted_urls:
+                for model in ("k3", "kimi-k3", "kimi-k3-cot"):
                     assert get_model_context_length(
-                        "k3", provider=provider, base_url=base_url
+                        model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
-
-            for provider in ("openrouter", "custom", "nvidia"):
                 assert get_model_context_length(
-                    "k3", provider=provider, base_url="https://example.invalid/v1"
+                    "k3-256k", provider="kimi-coding", base_url=base_url
+                ) == 262_144
+
+            for base_url in rejected_urls:
+                assert get_model_context_length(
+                    "k3", provider="kimi-coding", base_url=base_url
                 ) != 1_048_576
-
-            for model in ("kimi-k3", "kimi-k3-cot"):
-                assert get_model_context_length(
-                    model,
-                    provider="openrouter",
-                    base_url="https://example.invalid/v1",
-                ) == 1_048_576
+                for model in ("kimi-k3", "kimi-k3-cot"):
+                    assert get_model_context_length(
+                        model, provider="kimi-coding", base_url=base_url
+                    ) == 1_048_576
 
     def test_k3_endpoint_override_rejects_malformed_coding_urls(self):
         from agent.model_metadata import _endpoint_scoped_context_length
