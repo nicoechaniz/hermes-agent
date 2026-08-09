@@ -755,6 +755,94 @@ def test_kimi_runtime_uses_cli_oauth_when_api_key_missing(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 
+def _kimi_oauth_runtime_mocks(monkeypatch, cfg_base_url, creds):
+    """Shared mock stack for kimi-coding runtime resolution tests."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "kimi-coding",
+            "base_url": cfg_base_url,
+            "default": "kimi-k2.6",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: creds,
+    )
+
+
+def test_kimi_oauth_drops_stale_cross_provider_config_base_url(monkeypatch, caplog):
+    """A config model.base_url from a previous provider era must not hijack
+    kimi-coding OAuth sessions.
+
+    OAuth access tokens are only valid on the credential-derived host. A
+    stale value (e.g. the old openai-codex URL) otherwise wins via the
+    cfg_provider == provider name match and every fresh agent's first call
+    401s until the credential-refresh path rebuilds the client.
+    """
+    _kimi_oauth_runtime_mocks(
+        monkeypatch,
+        cfg_base_url="https://chatgpt.com/backend-api/codex",
+        creds={
+            "provider": "kimi-coding",
+            "api_key": "oauth-token",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "source": "kimi-cli-oauth-refresh",
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
+        resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["base_url"] == "https://api.kimi.com/coding/v1"
+    assert resolved["api_key"] == "oauth-token"
+    assert any(
+        "stale model.base_url" in rec.message and "chatgpt.com" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_kimi_oauth_keeps_same_host_config_base_url(monkeypatch):
+    """A config base_url on the OAuth host remains a deliberate override."""
+    _kimi_oauth_runtime_mocks(
+        monkeypatch,
+        cfg_base_url="https://api.kimi.com/coding/v1",
+        creds={
+            "provider": "kimi-coding",
+            "api_key": "oauth-token",
+            "base_url": "https://api.kimi.com/coding",
+            "source": "kimi-cli-oauth",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["base_url"] == "https://api.kimi.com/coding/v1"
+
+
+def test_kimi_static_api_key_keeps_config_base_url_override(monkeypatch):
+    """With a static API key the user picks the endpoint deliberately:
+    config model.base_url keeps winning even on a different host (#6039)."""
+    _kimi_oauth_runtime_mocks(
+        monkeypatch,
+        cfg_base_url="https://kimi-proxy.example.com/v1",
+        creds={
+            "provider": "kimi-coding",
+            "api_key": "sk-kimi-static",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "source": "env-api-key",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["base_url"] == "https://kimi-proxy.example.com/v1"
+
+
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
     """A custom_providers entry named after a built-in *alias* (not a canonical
     provider name) must win over the built-in.  Regression guard for #15743:
