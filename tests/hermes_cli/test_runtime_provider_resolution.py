@@ -1238,6 +1238,77 @@ class TestOllamaUrlSubstringLeak:
         assert resolved["api_key"] == "ol-legit-key"
 
 
+# =============================================================================
+# model.key_env / model.api_key_env — custom endpoint credentials by name
+# =============================================================================
+
+class TestCustomModelKeyEnv:
+    """model.key_env names the env var holding a custom endpoint's credential,
+    keeping secrets out of config.yaml (same convention as the Azure Anthropic
+    env-var hint). The resolution is gated on use_config_base_url like the
+    inline model.api_key it complements."""
+
+    def _resolve(self, monkeypatch, model_cfg, **kwargs):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+        return rp.resolve_runtime_provider(requested="custom", **kwargs)
+
+    def test_key_env_resolves_named_var(self, monkeypatch):
+        monkeypatch.setenv("MY_ENDPOINT_KEY", "secret-from-named-var")
+        resolved = self._resolve(monkeypatch, {
+            "provider": "custom",
+            "base_url": "https://llm.example.com/v1",
+            "key_env": "MY_ENDPOINT_KEY",
+        })
+        assert resolved["api_key"] == "secret-from-named-var"
+        assert resolved["base_url"] == "https://llm.example.com/v1"
+
+    def test_api_key_env_alias_resolves(self, monkeypatch):
+        monkeypatch.setenv("MY_ENDPOINT_KEY", "secret-via-alias")
+        resolved = self._resolve(monkeypatch, {
+            "provider": "custom",
+            "base_url": "https://llm.example.com/v1",
+            "api_key_env": "MY_ENDPOINT_KEY",
+        })
+        assert resolved["api_key"] == "secret-via-alias"
+
+    def test_key_env_unset_var_falls_through_to_placeholder(self, monkeypatch):
+        monkeypatch.delenv("UNSET_ENDPOINT_KEY", raising=False)
+        resolved = self._resolve(monkeypatch, {
+            "provider": "custom",
+            "base_url": "https://llm.example.com/v1",
+            "key_env": "UNSET_ENDPOINT_KEY",
+        })
+        assert resolved["api_key"] == "no-key-required"
+
+    def test_inline_api_key_still_wins_when_present(self, monkeypatch):
+        """key_env is additive: historical inline model.api_key keeps priority."""
+        monkeypatch.setenv("MY_ENDPOINT_KEY", "env-value")
+        resolved = self._resolve(monkeypatch, {
+            "provider": "custom",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "inline-value",
+            "key_env": "MY_ENDPOINT_KEY",
+        })
+        assert resolved["api_key"] == "inline-value"
+
+    def test_key_env_not_leaked_to_env_overridden_endpoint(self, monkeypatch):
+        """When base_url comes from an explicit override (not the config
+        endpoint), the model.key_env credential must NOT be sent there —
+        same leak-guard as inline model.api_key (#28660)."""
+        monkeypatch.setenv("MY_ENDPOINT_KEY", "cfg-secret-must-not-leak")
+        resolved = self._resolve(
+            monkeypatch,
+            {"provider": "custom",
+             "base_url": "https://llm.example.com/v1",
+             "key_env": "MY_ENDPOINT_KEY"},
+            explicit_base_url="https://other-endpoint.example.com/v1",
+        )
+        assert resolved["base_url"] == "https://other-endpoint.example.com/v1"
+        assert "cfg-secret" not in resolved["api_key"]
+
 
 # =============================================================================
 # Azure Foundry — both OpenAI-style and Anthropic-style endpoints

@@ -1253,6 +1253,12 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
+    cfg_key_env = ""
+    for k in ("key_env", "api_key_env"):
+        v = model_cfg.get(k)
+        if isinstance(v, str) and v.strip():
+            cfg_key_env = v.strip()
+            break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
@@ -1331,6 +1337,11 @@ def _resolve_openrouter_runtime(
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
+            # model.key_env / model.api_key_env: named env var holding the
+            # credential, same scope as inline model.api_key (keeps secrets
+            # out of config.yaml). Gated on use_config_base_url so a stale
+            # model section can't leak the key to an env-overridden endpoint.
+            (_getenv(cfg_key_env, "") if (cfg_key_env and use_config_base_url) else ""),
             (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (_getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),
