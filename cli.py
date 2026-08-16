@@ -7703,11 +7703,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
+        from agent.memory_manager import (
+            filter_native_memory_tool,
+            native_memory_stores_enabled,
+        )
+
         # Pre-assembly list: /tools is a discovery/inspection surface, so it
         # must show the full catalog including tools deferred behind the
         # tool_search bridge (users check this to verify an MCP installed).
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True,
                                      skip_tool_search_assembly=True)
+        active_agent = getattr(self, "agent", None)
+        if active_agent is not None:
+            if not native_memory_stores_enabled(active_agent):
+                tools = list(filter_native_memory_tool(tools) or [])
+        else:
+            memory_config = self.config.get("memory", {}) or {}
+            if not (
+                memory_config.get("memory_enabled", True)
+                or memory_config.get("user_profile_enabled", True)
+            ):
+                tools = list(filter_native_memory_tool(tools) or [])
         
         if not tools:
             print("(;_;) No tools available")

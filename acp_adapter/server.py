@@ -1005,6 +1005,7 @@ class HermesACPAgent(acp.Agent):
 
         try:
             from model_tools import get_tool_definitions
+            from types import SimpleNamespace
             from agent.memory_manager import (
                 apply_native_memory_tool_gate,
                 inject_memory_provider_tools,
@@ -1016,16 +1017,34 @@ class HermesACPAgent(acp.Agent):
             )
             state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
-            state.agent.tools = get_tool_definitions(
+            staged_tools = list(
+                get_tool_definitions(
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    quiet_mode=True,
+                )
+                or []
+            )
+            staged_agent = SimpleNamespace(
+                tools=staged_tools,
+                valid_tool_names={
+                    tool["function"]["name"] for tool in staged_tools
+                },
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
-                quiet_mode=True,
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
+                _memory_enabled=getattr(state.agent, "_memory_enabled", False),
+                _user_profile_enabled=getattr(
+                    state.agent, "_user_profile_enabled", False
+                ),
             )
-            state.agent.valid_tool_names = {
-                tool["function"]["name"] for tool in state.agent.tools or []
-            }
-            apply_native_memory_tool_gate(state.agent)
-            inject_memory_provider_tools(state.agent)
+            apply_native_memory_tool_gate(staged_agent)
+            inject_memory_provider_tools(staged_agent)
+
+            # Publish only after every gate/injector succeeds. If anything
+            # above raises, the broad handler preserves the prior safe surface.
+            state.agent.tools = staged_agent.tools
+            state.agent.valid_tool_names = staged_agent.valid_tool_names
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()
