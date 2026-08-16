@@ -4,6 +4,26 @@ Team-facing summary of changes to our fork. For branch topology and sync command
 
 > Provider note: profile configs reference DeepSeek, Kimi, and MiniMax providers because that is our stack. Team members using different providers should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` or a symlinked shared `.env`.
 
+## 2026-08-16 — HMK-first native memory tool retirement
+
+- Canonical lane: `feat/hmk-native-memory-retirement`.
+- Profiles with both `memory.memory_enabled` and
+  `memory.user_profile_enabled` set to `false` no longer expose the built-in
+  `memory()` tool or its generic system-prompt guidance.
+- The shared `memory` toolset remains enabled so external providers such as
+  `hmk-memory` continue exposing `librarian`.
+- The gate is applied during initial agent construction, MCP tool refreshes,
+  ACP MCP registration, and ACP tool listings.
+- `hermes memory status` now distinguishes the suppressed native tool from the
+  enabled external-provider toolset.
+
+### Verification
+
+- Run the focused memory/tool-surface suite:
+  `scripts/run_tests.sh tests/run_agent/test_native_memory_tool_gate.py tests/tools/test_refresh_agent_mcp_tools.py tests/hermes_cli/test_memory_status.py tests/agent/test_memory_provider.py tests/agent/test_prompt_builder.py tests/acp_adapter/test_acp_mcp_discovery.py tests/acp_adapter/test_acp_commands.py -q --tb=short`.
+- Start a fresh agent and verify its model schema contains `librarian`, omits
+  `memory`, and omits `MEMORY_GUIDANCE`.
+
 ## 2026-05-14 — Kimi OAuth architecture consolidation
 
 ### Centralized resolution

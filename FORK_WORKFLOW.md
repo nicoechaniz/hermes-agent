@@ -24,6 +24,7 @@ These are the active branches we intentionally preserve as separable patches ove
 | `feat/kanban-review` | Kanban review orchestration | Review graph/templates/CLI wiring for `hermes kanban review`. |
 | `feat/altermundi-cli` | CLI input / interrupt behavior | Ctrl+C priority, interrupt transcript safety, multimodal requeue, TUI config support. |
 | `feat/altermundi-tui` | TUI history behavior | History navigation behavior in the Ink TUI. |
+| `feat/hmk-native-memory-retirement` | HMK-first native memory retirement | Keeps the shared memory toolset available for external providers while removing the built-in `memory()` model tool whenever both native stores are disabled. |
 
 If a branch is superseded, delete the remote branch after the replacement is merged and verified. Leave a local `backup/*` branch only when recent recovery is useful.
 
@@ -65,6 +66,7 @@ git merge --no-ff feat/minimax-defaults
 git merge --no-ff feat/kanban-review
 git merge --no-ff feat/altermundi-cli
 git merge --no-ff feat/altermundi-tui
+git merge --no-ff feat/hmk-native-memory-retirement
 ```
 
 Run tests before pushing. Use the wrapper, never raw `pytest`:
