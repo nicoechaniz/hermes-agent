@@ -16,6 +16,9 @@ class FakeAgent:
         self.disabled_toolsets = []
         self.tools = []
         self.valid_tool_names = set()
+        self._memory_enabled = False
+        self._user_profile_enabled = False
+        self._memory_manager: object | None = None
         self._supports_active_turn_redirect = True
         self.steers = []
         self.redirects = []
@@ -118,6 +121,53 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+
+
+def test_acp_tools_hides_native_memory_but_lists_provider_tool(monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.enabled_toolsets = ["memory"]
+    fake._memory_enabled = False
+    fake._user_profile_enabled = False
+    fake._memory_manager = SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {
+                "name": "librarian",
+                "description": "HMK library",
+                "parameters": {},
+            }
+        ]
+    )
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Native memory",
+                    "parameters": {},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Shell",
+                    "parameters": {},
+                },
+            },
+        ],
+    )
+
+    output = acp_agent._cmd_tools("", state)
+
+    assert "memory:" not in output
+    assert "librarian: HMK library" in output
+    assert "terminal: Shell" in output
 
 
 @pytest.mark.asyncio
