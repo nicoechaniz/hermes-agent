@@ -2244,7 +2244,12 @@ class HermesACPAgent(acp.Agent):
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             )
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+            )
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={
@@ -2253,6 +2258,7 @@ class HermesACPAgent(acp.Agent):
                     if isinstance(tool, dict)
                 },
                 enabled_toolsets=toolsets,
+                disabled_toolsets=disabled_toolsets,
                 _memory_manager=getattr(state.agent, "_memory_manager", None),
                 _memory_enabled=getattr(state.agent, "_memory_enabled", False),
                 _user_profile_enabled=getattr(

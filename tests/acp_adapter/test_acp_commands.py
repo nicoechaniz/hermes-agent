@@ -170,6 +170,54 @@ def test_acp_tools_hides_native_memory_but_lists_provider_tool(monkeypatch):
     assert "terminal: Shell" in output
 
 
+def test_acp_tools_respects_disabled_memory_toolset(monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.enabled_toolsets = ["memory"]
+    fake.disabled_toolsets = ["memory"]
+    fake._memory_enabled = False
+    fake._user_profile_enabled = False
+    fake._memory_manager = SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {
+                "name": "librarian",
+                "description": "HMK library",
+                "parameters": {},
+            }
+        ]
+    )
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Native memory",
+                    "parameters": {},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Shell",
+                    "parameters": {},
+                },
+            },
+        ],
+    )
+
+    output = acp_agent._cmd_tools("", state)
+
+    assert "memory:" not in output
+    assert "librarian:" not in output
+    assert "terminal: Shell" in output
+
+
 @pytest.mark.asyncio
 async def test_acp_registration_gate_failure_preserves_previous_safe_surface(
     monkeypatch,
