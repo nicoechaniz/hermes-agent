@@ -1729,7 +1729,13 @@ def init_agent(
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
+    # Keep the memory toolset enabled for external providers, but fail closed
+    # on the native MEMORY.md/USER.md tool when both built-in stores are off.
+    from agent.memory_manager import (
+        apply_native_memory_tool_gate as _apply_native_memory_tool_gate,
+        inject_memory_provider_tools as _inject_memory_provider_tools,
+    )
+    _apply_native_memory_tool_gate(agent)
     _inject_memory_provider_tools(agent)
 
     # Skills config: nudge interval for skill creation reminders
