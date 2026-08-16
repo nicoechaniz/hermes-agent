@@ -11,6 +11,8 @@ freezing any particular tool list.
 import threading
 import types
 
+import pytest
+
 from tools import mcp_tool
 
 
@@ -135,6 +137,36 @@ def test_refresh_drops_native_memory_but_keeps_provider_tools(monkeypatch):
 
     assert agent.valid_tool_names == {"read_file", "librarian", "mcp_new_tool"}
     assert "memory" not in agent.valid_tool_names
+
+
+def test_refresh_gate_failure_preserves_previous_safe_surface(monkeypatch):
+    """A gate error aborts the staged refresh instead of publishing memory."""
+    agent = _agent(["read_file", "librarian"])
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+
+    import agent.memory_manager as memory_manager
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("memory")],
+    )
+    monkeypatch.setattr(
+        memory_manager,
+        "filter_native_memory_tool",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gate failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="gate failed"):
+        mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert [tool["function"]["name"] for tool in agent.tools] == [
+        "read_file",
+        "librarian",
+    ]
+    assert agent.valid_tool_names == {"read_file", "librarian"}
 
 
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
