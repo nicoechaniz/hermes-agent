@@ -137,7 +137,6 @@ export interface ConfigFullResponse {
     display?: ConfigDisplayConfig
     tui?: ConfigTuiConfig
     voice?: ConfigVoiceConfig
-    tui?: ConfigTuiConfig
     paste_collapse_threshold?: number
     paste_collapse_char_threshold?: number
   }
