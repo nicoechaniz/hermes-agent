@@ -6240,6 +6240,7 @@ class AIAgent:
             return False
 
         logger.info("Copilot credentials refreshed from %s", token_source)
+        return True
 
     def _try_refresh_kimi_client_credentials(self, *, force: bool = True) -> bool:
         if self.provider not in {"kimi-coding", "kimi-coding-cn"} and not base_url_host_matches(self.base_url, "api.kimi.com"):
