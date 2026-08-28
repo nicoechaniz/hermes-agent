@@ -6240,6 +6240,40 @@ class AIAgent:
             return False
 
         logger.info("Copilot credentials refreshed from %s", token_source)
+
+    def _try_refresh_kimi_client_credentials(self, *, force: bool = True) -> bool:
+        if self.provider not in {"kimi-coding", "kimi-coding-cn"} and not base_url_host_matches(self.base_url, "api.kimi.com"):
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_kimi_coding_runtime_credentials, kimi_coding_default_headers
+
+            creds = resolve_kimi_coding_runtime_credentials(
+                force_refresh=force,
+                allow_api_key_fallback=False,
+            )
+        except Exception as exc:
+            logger.debug("Kimi credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        source = str(creds.get("source") or "")
+        if source not in {"kimi-cli-oauth", "kimi-cli-oauth-refresh"}:
+            return False
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._client_kwargs["default_headers"] = kimi_coding_default_headers()
+
+        if not self._replace_primary_openai_client(reason="kimi_credential_refresh"):
+            return False
         return True
 
     def _try_recover_stale_copilot_credential(self) -> bool:
@@ -6384,8 +6418,9 @@ class AIAgent:
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
-            from agent.auxiliary_client import _AI_GATEWAY_HEADERS
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+            from hermes_cli.auth import kimi_coding_default_headers
+
+            self._client_kwargs["default_headers"] = kimi_coding_default_headers()
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):

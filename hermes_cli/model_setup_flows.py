@@ -2128,6 +2128,7 @@ def _model_flow_kimi(config, current_model=""):
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
+        resolve_kimi_coding_runtime_credentials,
     )
     from hermes_cli.config import (
         get_env_value,
@@ -2141,20 +2142,38 @@ def _model_flow_kimi(config, current_model=""):
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Step 1: Check / prompt for API key
+    # Step 1: Prefer Kimi CLI OAuth; otherwise the shared API-key wizard
+    # (which also handles the already-configured keep/replace/clear case).
     existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
-    existing_key, abort = _prompt_api_key(
-        pconfig,
-        existing_key,
-        provider_id=provider_id,
-        existing_source=existing_source,
-    )
-    if abort:
-        return
+    oauth_available = False
+    if not existing_key:
+        try:
+            oauth_creds = resolve_kimi_coding_runtime_credentials()
+            oauth_available = oauth_creds.get("source") in {
+                "kimi-cli-oauth",
+                "kimi-cli-oauth-refresh",
+            }
+            if oauth_available:
+                # Display/confirm only: runtime re-resolves OAuth itself.
+                existing_key = str(oauth_creds.get("api_key", "") or "")
+                print(f"  {pconfig.name} OAuth: {oauth_creds['auth_file']} ✓")
+                print()
+        except Exception:
+            pass
 
-    # Step 2: Auto-detect endpoint from key prefix
-    is_coding_plan = existing_key.startswith("sk-kimi-")
+    if not oauth_available:
+        existing_key, abort = _prompt_api_key(
+            pconfig,
+            existing_key,
+            provider_id=provider_id,
+            existing_source=existing_source,
+        )
+        if abort:
+            return
+
+    # Step 2: Auto-detect endpoint from key prefix or OAuth credentials.
+    is_coding_plan = oauth_available or existing_key.startswith("sk-kimi-")
     if is_coding_plan:
         effective_base = KIMI_CODE_BASE_URL
         print(f"  Detected Kimi Coding Plan key → {effective_base}")

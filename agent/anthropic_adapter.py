@@ -910,20 +910,13 @@ def build_anthropic_client(
     )
 
     if _is_kimi_coding_endpoint(base_url):
-        # Kimi's /coding endpoint requires a non-empty User-Agent to be
-        # recognized as a valid Coding Agent. Originally we sent
-        # ``claude-code/0.1.0`` (the minimum that avoided a 403), but the Kimi
-        # team asked us to identify ourselves properly so they can attribute
-        # traffic correctly. Send the same attribution header set we send to
-        # OpenRouter, Vercel AI Gateway, and Fireworks:
-        # HTTP-Referer + X-Title + HermesAgent User-Agent.
+        # Kimi's /coding endpoint requires full X-Msh-* headers and KimiCLI UA.
+        # Without them, requests return 404/403.
+        from hermes_cli.auth import kimi_coding_default_headers
         kwargs["api_key"] = api_key
-        kwargs["default_headers"] = {
-            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-            "X-Title": "Hermes Agent",
-            "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
-            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
-        }
+        kwargs["default_headers"] = kimi_coding_default_headers()
+        if common_betas:
+            kwargs["default_headers"]["anthropic-beta"] = ",".join(common_betas)
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints
