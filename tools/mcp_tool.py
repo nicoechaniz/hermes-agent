@@ -8216,6 +8216,18 @@ def refresh_agent_mcp_tools(
     )
     new_names = {t["function"]["name"] for t in new_defs}
 
+    # Match agent initialization: an MCP refresh must not reintroduce the
+    # native memory tool into an external-provider-only profile. Do not catch
+    # gate errors here: ``new_defs`` is still staged locally, so aborting the
+    # refresh preserves the previously published safe surface.
+    from agent.memory_manager import (
+        filter_native_memory_tool,
+        native_memory_stores_enabled,
+    )
+
+    if not native_memory_stores_enabled(agent):
+        new_defs = list(filter_native_memory_tool(new_defs, new_names) or [])
+
     # Re-append the post-build injected families that get_tool_definitions does
     # NOT reproduce, so a refresh never strips them (memory-provider + context-
     # engine tools). Staged entirely on LOCALS — the live ``agent.tools`` /

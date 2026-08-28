@@ -1522,6 +1522,10 @@ def _(rid, params: dict) -> dict:
 @method("tools.show")
 def _(rid, params: dict) -> dict:
     try:
+        from agent.memory_manager import (
+            filter_native_memory_tool,
+            native_memory_stores_enabled,
+        )
         from model_tools import get_toolset_for_tool, get_tool_definitions
 
         session = _sessions.get(params.get("session_id", ""))
@@ -1534,6 +1538,18 @@ def _(rid, params: dict) -> dict:
         # tools deferred behind the tool_search bridge (same as the CLI).
         tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True,
                                      skip_tool_search_assembly=True)
+        if session:
+            if not native_memory_stores_enabled(session["agent"]):
+                tools = list(filter_native_memory_tool(tools) or [])
+        else:
+            from hermes_cli.config import load_config_readonly
+
+            memory_config = load_config_readonly().get("memory", {}) or {}
+            if not (
+                memory_config.get("memory_enabled", True)
+                or memory_config.get("user_profile_enabled", True)
+            ):
+                tools = list(filter_native_memory_tool(tools) or [])
         sections = {}
 
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):

@@ -111,6 +111,61 @@ def memory_provider_tools_enabled(
         return False
 
 
+def native_memory_stores_enabled(agent: Any) -> bool:
+    """Return whether either built-in MEMORY.md or USER.md store is active."""
+    return bool(
+        getattr(agent, "_memory_enabled", False)
+        or getattr(agent, "_user_profile_enabled", False)
+    )
+
+
+def filter_native_memory_tool(
+    tools: Optional[List[Dict[str, Any]]],
+    valid_tool_names: Optional[set] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Remove only the built-in ``memory`` tool from a model tool surface.
+
+    External provider tools such as ``librarian`` share the memory toolset and
+    must remain available. The input list is returned unchanged when the
+    native tool is already absent.
+    """
+    if valid_tool_names is not None:
+        valid_tool_names.discard("memory")
+    if not tools:
+        return tools
+
+    filtered = [
+        tool
+        for tool in tools
+        if not (
+            isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            and tool["function"].get("name") == "memory"
+        )
+    ]
+    return filtered if len(filtered) != len(tools) else tools
+
+
+def apply_native_memory_tool_gate(agent: Any) -> bool:
+    """Hide native memory when both built-in stores are disabled.
+
+    The memory toolset stays enabled so an external provider can still inject
+    its own tools. Returns ``True`` when the disabled-store gate applies.
+    """
+    if native_memory_stores_enabled(agent):
+        return False
+
+    tools = getattr(agent, "tools", None)
+    names = getattr(agent, "valid_tool_names", None)
+    filtered = filter_native_memory_tool(
+        tools,
+        names if isinstance(names, set) else None,
+    )
+    if filtered is not tools and tools is not None:
+        agent.tools = filtered
+    return True
+
+
 def memory_provider_tools_exposed(agent: Any) -> bool:
     """Whether external memory-provider tools are exposed on ``agent``.
 
