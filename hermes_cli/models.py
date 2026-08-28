@@ -3810,6 +3810,19 @@ def _model_dedup_key(model_id: str) -> str:
         return key
 
 
+def _dedupe_model_ids(model_ids: list[str]) -> list[str]:
+    """Deduplicate model IDs by their picker alias while preserving order."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for model_id in model_ids:
+        key = _model_dedup_key(model_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(model_id)
+    return result
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """Merge curated list with fresh models.dev entries for a preferred provider.
 
@@ -3950,8 +3963,11 @@ _KIMI_CODE_ONLY_MODEL_IDS = frozenset({
 
 def _filter_kimi_legacy_model_ids(model_ids: list[str], base_url: str) -> list[str]:
     if _is_kimi_coding_endpoint(base_url):
-        return model_ids
-    return [model for model in model_ids if model.lower() not in _KIMI_CODE_ONLY_MODEL_IDS]
+        return _dedupe_model_ids(model_ids)
+    return _dedupe_model_ids([
+        model for model in model_ids
+        if model.lower() not in _KIMI_CODE_ONLY_MODEL_IDS
+    ])
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
