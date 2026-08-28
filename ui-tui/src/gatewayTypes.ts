@@ -135,6 +135,7 @@ export interface ConfigFullResponse {
   config?: {
     approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig
+    tui?: ConfigTuiConfig
     voice?: ConfigVoiceConfig
     tui?: ConfigTuiConfig
     paste_collapse_threshold?: number
