@@ -4,6 +4,49 @@ Team-facing summary of changes to our fork. For branch topology and sync command
 
 > Provider note: profile configs reference DeepSeek, Kimi, and MiniMax providers because that is our stack. Team members using different providers should adapt `model.provider`, `model.default`, and `model.base_url` in each profile's `config.yaml`. API keys go in each profile's `.env` or a symlinked shared `.env`.
 
+## 2026-08-27 — Upstream sync to v2026.8.27
+
+### Fork composition
+
+- Previous deployed `main`: `f99f135b26267b828cdc9c887d84a7d7179fe8d9`.
+- Upstream mirror: `nousmain` = `upstream/main` =
+  `6dcebea7fc5d0cc4f621eeaddf52b7d877a5f882`.
+- Reconstructed nine maintained lanes in isolated `sync/2026-08-27/*`
+  worktrees before replacing any canonical ref.
+- `feat/minimax-defaults` retired because upstream owns that behavior;
+  `feat/video-gen-minimax` remains active because direct MiniMax generation is
+  distinct from upstream's FAL-routed MiniMax models.
+
+### Upstream runtime effects
+
+- Large Desktop/Bot Mode expansion plus gateway liveness, session durability,
+  state-DB recovery, cron, delegation, compression, browser/computer-use, and
+  plugin-surface hardening.
+- `execute_code` gains optional session-persistent kernels.
+- Image/video generation now defaults to opt-in upscaling; the direct local
+  MiniMax backend remains available without adding storage/retention fields.
+
+### Preserved local contracts
+
+- Kimi CLI OAuth identity and refresh, provider-scoped K3 context/temperature
+  behavior, Kimi WebBridge, DaemonCraft, Kanban review, CLI/TUI input behavior,
+  Altermundi collective memory, direct MiniMax video, and HMK-first native
+  memory-tool retirement.
+- DaemonCraft now accepts the shared adapter reconnect contract.
+- Stale mBit/embodied-plan tests were aligned with the deployed visual-only,
+  auto-cancel, and mixed plan-step response contracts.
+
+### Migration cautions
+
+- Keep `display.ctrl_c_priority`; the Altermundi CLI lane deliberately restores
+  it after upstream removed the default key.
+- Keep the `altermundi` and `minecraft` toolsets enabled where required; local
+  lanes restore them after upstream removed them from its base catalog.
+- HMK-first profiles must keep the shared `memory` toolset enabled while both
+  native stores remain disabled.
+- Restart every long-lived gateway after deploy; existing processes retain old
+  imported modules.
+
 ## 2026-08-16 — HMK-first native memory tool retirement
 
 - Canonical lane: `feat/hmk-native-memory-retirement`.
