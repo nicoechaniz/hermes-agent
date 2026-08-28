@@ -1393,6 +1393,7 @@ DEFAULT_CONFIG = {
         # starts delegating, nudging the user toward the live spawn-tree
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
+        "ctrl_c_priority": "interrupt_agent",  # "interrupt_agent" | "clear_input"
         "bell_on_complete": False,
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
