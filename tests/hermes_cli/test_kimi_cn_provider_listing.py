@@ -26,8 +26,11 @@ from hermes_cli.providers import resolve_provider_full
 
 
 @patch.dict(os.environ, {"KIMI_CN_API_KEY": "sk-cn-fake"}, clear=False)
-def test_kimi_cn_appears_when_only_cn_key_set():
+def test_kimi_cn_appears_when_only_cn_key_set(tmp_path, monkeypatch):
     """kimi-coding-cn should appear when only KIMI_CN_API_KEY is set."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
     providers = list_authenticated_providers(current_provider="kimi-coding-cn")
 
     # kimi-coding-cn must be listed (it has credentials)

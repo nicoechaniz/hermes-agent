@@ -4544,7 +4544,12 @@ class TestRunConversation:
         bad_resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+        recovered_resp = _mock_response(
+            content="Recovered after truncation.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            good_resp, bad_resp, recovered_resp,
+        ]
 
         with (
             patch("run_agent.handle_function_call", return_value='{"success":true}'),
@@ -4554,10 +4559,11 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("write then truncate")
 
-        assert result.get("partial") is True
+        assert result.get("completed") is True
+        assert result.get("final_response") == "Recovered after truncation."
         msgs = result.get("messages") or []
         assert msgs[-1].get("role") == "assistant"
-        assert "truncated" in (msgs[-1].get("content") or "").lower()
+        assert msgs[-1].get("content") == "Recovered after truncation."
         assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
 
 

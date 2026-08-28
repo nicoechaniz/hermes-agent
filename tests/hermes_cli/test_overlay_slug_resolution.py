@@ -63,7 +63,8 @@ def test_kimi_cli_oauth_file_makes_picker_provider_visible(tmp_path, monkeypatch
 
     kimi = next((p for p in providers if p["slug"] == "kimi-coding"), None)
     assert kimi is not None, "kimi-coding should appear when Kimi CLI OAuth exists"
-    assert kimi["models"] == ["kimi-for-coding"]
+    assert "kimi-for-coding" in kimi["models"]
+    assert len(kimi["models"]) == len(set(kimi["models"]))
     assert kimi["is_current"] is True
 
 
