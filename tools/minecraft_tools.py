@@ -2113,6 +2113,10 @@ MC_MACRO_SCHEMA = {
             "type": "number",
             "description": "For 'spiral': steps before rotating 90°. 2 = tight spiral with 1-block center pillar. Default 3."
         },
+        "stop_on_open_sky": {
+            "type": "boolean",
+            "description": "For 'spiral': override the default surface guard. Set false only for a human-directed recovery from an open vertical shaft."
+        },
         "distance": {
             "type": "number",
             "description": "For 'tunnel': how many blocks to tunnel. Default 10."
@@ -2153,12 +2157,15 @@ def _handle_mc_macro(args: dict, **kwargs) -> str:
     if macro == "spiral":
         target_y = args.get("target_y")
         steps_per_side = args.get("steps_per_side")
+        stop_on_open_sky = args.get("stop_on_open_sky")
         if target_y is None:
             return "Error: 'target_y' is required for spiral"
 
         body = {"macro": "spiral", "target_y": target_y}
         if steps_per_side is not None:
             body["steps_per_side"] = steps_per_side
+        if stop_on_open_sky is not None:
+            body["stop_on_open_sky"] = stop_on_open_sky
 
         resp = _api_post("/macro", body, timeout=600)
 
