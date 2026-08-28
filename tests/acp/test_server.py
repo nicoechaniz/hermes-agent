@@ -692,7 +692,7 @@ class TestRegisterSessionMcpServers:
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools is fake_tools
+        assert state.agent.tools[: len(fake_tools)] == fake_tools
         assert state.agent.tools[-1] == {
             "type": "function",
             "function": {
