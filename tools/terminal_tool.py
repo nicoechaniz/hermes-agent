@@ -2800,7 +2800,7 @@ def _resolve_command_cwd(
     sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
-        return workdir
+        return os.path.expandvars(os.path.expanduser(workdir))
     recorded = get_session_cwd(session_key)
     if (
         recorded
@@ -4089,7 +4089,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', _safe_getcwd())}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
-    print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
+    print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '180')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 
 

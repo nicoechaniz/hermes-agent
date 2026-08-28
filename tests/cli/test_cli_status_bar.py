@@ -131,6 +131,17 @@ class TestCLIStatusBar:
         assert cli_mod._estimate_tui_input_height(["abcdef"], "⚔ ", 3) == 3
 
 
+    def test_input_height_accounts_for_prompt_fragments(self):
+        # The classic CLI passes its prompt_toolkit fragments through as one
+        # prompt string. The initial prompt consumes two cells, leaving only
+        # one input cell on the first row of this narrow terminal.
+        prompt = "".join(text for _, text in [("class:prompt", "⚔ ")])
+        assert cli_mod._estimate_tui_input_height(["abcd"], prompt, 3) == 2
+
+    def test_input_height_clamps_zero_width_to_one_cell(self):
+        # Some terminals briefly report zero columns during resize. Treat that
+        # as a one-cell terminal rather than falling back to a fake wide width.
+        assert cli_mod._estimate_tui_input_height(["abcd"], "", 0) == 4
 
 
 

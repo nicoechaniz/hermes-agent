@@ -4238,6 +4238,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     raw_index = getattr(tc_delta, "index", None)
                     raw_idx = raw_index if raw_index is not None else 0
                     delta_id = getattr(tc_delta, "id", None) or ""
+                    # A genuine new tool call always opens with a function
+                    # name; argument-continuation deltas carry only
+                    # ``function.arguments``.  Gate the "new slot" logic below
+                    # on a name so providers that resend a *changing* id on
+                    # every continuation delta (kimi-coding) don't get each
+                    # JSON fragment ('{"', 'query', '":', ...) split into its
+                    # own bogus tool call.
+                    _delta_has_name = bool(
+                        getattr(
+                            getattr(tc_delta, "function", None), "name", None
+                        )
+                    )
 
                     # Ollama fix: detect a new tool call reusing the same
                     # raw index (different id) and redirect to a fresh slot.
@@ -4245,12 +4257,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         _active_slot_by_idx[raw_idx] = raw_idx
                     if (
                         delta_id
+                        and _delta_has_name
                         and raw_idx in _last_id_at_idx
                         and delta_id != _last_id_at_idx[raw_idx]
                     ):
                         new_slot = max(tool_calls_acc, default=-1) + 1
                         _active_slot_by_idx[raw_idx] = new_slot
-                    if delta_id:
+                    if delta_id and _delta_has_name:
                         _last_id_at_idx[raw_idx] = delta_id
                     idx = _active_slot_by_idx[raw_idx]
 
