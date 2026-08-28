@@ -44,6 +44,10 @@ Team-facing summary of changes to our fork. For branch topology and sync command
   lanes restore them after upstream removed them from its base catalog.
 - HMK-first profiles must keep the shared `memory` toolset enabled while both
   native stores remain disabled.
+- NVIDIA retired `nvidia/llama-nemotron-embed-1b-v2` with HTTP 410. The
+  approved HMK pair is now `nvidia / nvidia/nemotron-3-embed-1b` (2048
+  dimensions). Before completing rebirth, verify the portable archive contains
+  the complete 169-chapter embedding set for that pair.
 - Restart every long-lived gateway after deploy; existing processes retain old
   imported modules.
 
