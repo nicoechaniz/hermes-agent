@@ -18,13 +18,19 @@ These are the active branches we intentionally preserve as separable patches ove
 
 | Branch | Purpose | Notes |
 |--------|---------|-------|
+| `feat/altermundi` | Generic fork fixes and shared Altermundi integration | Owns fork workflow docs, collective-memory plugin wiring, provider-neutral runtime fixes, and other generic changes that do not belong to a subsystem lane. |
 | `feat/kimi` | Kimi support and corrections | Kimi CLI OAuth from `~/.kimi/credentials/kimi-code.json`; `X-Msh-*` headers; runtime credential resolution; Kimi OAuth refresh on auxiliary 401; Kimi K2.x context-length fixes. This replaces the old `feat/kimi-oauth-clean*` and `fix/kimi-context-length-resolution` branches. |
+| `feat/kimi-webbridge` | Kimi WebBridge browser toolset | Real-browser bridge tool and its CLI/toolset registration. |
+| `feat/video-gen-minimax` | Direct MiniMax video generation | Direct MiniMax async generation backend and picker integration; distinct from upstream's MiniMax models routed through FAL. |
 | `feat/daemoncraft` | DaemonCraft gateway / embodied-agent integration | Canonical DaemonCraft patch set. Keep clean over `nousmain`; old messy history lives only in `feat/daemoncraft-legacy` / backups. |
-| `feat/minimax-defaults` | MiniMax defaults | Provider defaults for MiniMax Anthropic Messages transport and base URL behavior. |
 | `feat/kanban-review` | Kanban review orchestration | Review graph/templates/CLI wiring for `hermes kanban review`. |
 | `feat/altermundi-cli` | CLI input / interrupt behavior | Ctrl+C priority, interrupt transcript safety, multimodal requeue, TUI config support. |
 | `feat/altermundi-tui` | TUI history behavior | History navigation behavior in the Ink TUI. |
 | `feat/hmk-native-memory-retirement` | HMK-first native memory retirement | Keeps the shared memory toolset available for external providers while removing the built-in `memory()` model tool whenever both native stores are disabled. |
+
+`feat/minimax-defaults` is no longer active: upstream now owns the MiniMax
+Anthropic transport/default endpoint behavior. Its historical tip remains under
+`backup/minimax-defaults-pre-v014` for recovery only.
 
 If a branch is superseded, delete the remote branch after the replacement is merged and verified. Leave a local `backup/*` branch only when recent recovery is useful.
 
@@ -44,7 +50,11 @@ git checkout nousmain
 git reset --hard upstream/main
 ```
 
-Rebuild each canonical feature branch on top of the new `nousmain`:
+Rebuild each canonical feature branch on top of the new `nousmain`. For a
+small clean patch stack, a rebase is acceptable. For a lane with integration
+history, reconstruct it first under a dated `sync/YYYY-MM-DD/<lane>` ref in an
+isolated worktree; preserve the original canonical ref until the complete
+composition passes verification:
 
 ```bash
 git checkout feat/kimi
@@ -60,9 +70,11 @@ Rebuild integration `main`:
 ```bash
 git checkout main
 git reset --hard nousmain
+git merge --no-ff feat/altermundi
 git merge --no-ff feat/kimi
+git merge --no-ff feat/kimi-webbridge
+git merge --no-ff feat/video-gen-minimax
 git merge --no-ff feat/daemoncraft
-git merge --no-ff feat/minimax-defaults
 git merge --no-ff feat/kanban-review
 git merge --no-ff feat/altermundi-cli
 git merge --no-ff feat/altermundi-tui
