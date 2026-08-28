@@ -253,28 +253,45 @@ class TestDefaultContextLengths:
                     base_url=base_url,
                 ) == 1_000_000
 
-    def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
-        """The bare ``k3`` slug's 1 Mi context must not leak to unverified endpoints.
+    def test_k3_context_is_scoped_to_kimi_provider(self):
+        """The short ``k3`` alias is 1 MiB only for Kimi coding providers.
 
-        The named ``kimi-k3`` / ``kimi-k3-cot`` slugs resolve to 1 Mi
-        EVERYWHERE via DEFAULT_CONTEXT_LENGTHS — the window is a property of
-        the model, served at 1M on api.moonshot.ai and api.moonshot.cn alike
-        (verified against models.dev + OpenRouter live metadata). Only the
-        bare ``k3`` slug, which exists solely on the Kimi Coding Plan
-        endpoint, stays endpoint-scoped.
+        Kimi's provider identity is authoritative even when an old config has
+        a missing or legacy base URL. Unrelated providers must not inherit the
+        short alias, while fully qualified ``kimi-k3`` names remain global.
         """
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
              patch("agent.models_dev.lookup_models_dev_context", return_value=None):
-            accepted_urls = (
-                "https://api.kimi.com/coding",
-                "https://API.KIMI.COM/coding/",
-                "https://api.kimi.com:443/coding",
-                "https://api.kimi.com/coding/v1",
-            )
-            rejected_urls = (
+            for provider in ("kimi-coding", "kimi-coding-cn"):
+                for base_url in (
+                    "",
+                    "https://api.kimi.com/coding",
+                    "https://api.kimi.com/coding/v1",
+                    "http://api.kimi.com/coding",
+                ):
+                    assert get_model_context_length(
+                        "k3", provider=provider, base_url=base_url
+                    ) == 1_048_576
+
+            for provider in ("openrouter", "custom", "nvidia"):
+                assert get_model_context_length(
+                    "k3", provider=provider, base_url="https://example.invalid/v1"
+                ) != 1_048_576
+
+            for model in ("kimi-k3", "kimi-k3-cot"):
+                assert get_model_context_length(
+                    model,
+                    provider="openrouter",
+                    base_url="https://example.invalid/v1",
+                ) == 1_048_576
+
+    def test_k3_endpoint_override_rejects_malformed_coding_urls(self):
+        from agent.model_metadata import _endpoint_scoped_context_length
+
+        rejected_urls = (
                 "http://api.kimi.com/coding",
                 "https://api.kimi.com:8443/coding",
                 "https://api.kimi.com/coding/../other",
@@ -284,24 +301,8 @@ class TestDefaultContextLengths:
                 "https://api.moonshot.ai/v1",
                 "https://api.moonshot.cn/v1",
             )
-
-            for base_url in accepted_urls:
-                for model in ("k3", "kimi-k3", "kimi-k3-cot"):
-                    assert get_model_context_length(
-                        model, provider="kimi-coding", base_url=base_url
-                    ) == 1_048_576
-
-            for base_url in rejected_urls:
-                # Bare slug: endpoint-scoped, must NOT leak off-endpoint.
-                assert get_model_context_length(
-                    "k3", provider="kimi-coding", base_url=base_url
-                ) != 1_048_576
-                # Named slugs: global DEFAULT_CONTEXT_LENGTHS entry applies
-                # everywhere the model is actually named kimi-k3.
-                for model in ("kimi-k3", "kimi-k3-cot"):
-                    assert get_model_context_length(
-                        model, provider="kimi-coding", base_url=base_url
-                    ) == 1_048_576
+        for base_url in rejected_urls:
+            assert _endpoint_scoped_context_length("k3", base_url) is None
 
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
