@@ -1239,12 +1239,12 @@ def _handle_mc_command(args: dict, **kwargs) -> str:
     if stripped == "/godmode on" or stripped == "/godmode":
         _gm_path = Path.home() / ".local" / "share" / "daemoncraft" / "rolemaster" / "godmode"
         _gm_path.parent.mkdir(parents=True, exist_ok=True)
-        _gm_path.write_text("on")
+        _gm_path.write_text("on", encoding="utf-8")
         return "Godmode ENABLED. The Daemon Guardian will keep you in creative mode with invulnerability effects."
     if stripped == "/godmode off":
         _gm_path = Path.home() / ".local" / "share" / "daemoncraft" / "rolemaster" / "godmode"
         _gm_path.parent.mkdir(parents=True, exist_ok=True)
-        _gm_path.write_text("off")
+        _gm_path.write_text("off", encoding="utf-8")
         return "Godmode DISABLED. The Daemon Guardian is paused. You can now take damage, drown, or switch gamemodes. Say '/godmode on' to restore protection."
 
     return _fmt(_api_post("/chat/send", {"message": command}))
@@ -1283,7 +1283,7 @@ _BLUEPRINTS_DIR = Path(__file__).parent.parent / "blueprints"
 def _load_story() -> dict:
     if _STORY_PATH.exists():
         try:
-            return json.loads(_STORY_PATH.read_text())
+            return json.loads(_STORY_PATH.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {
@@ -1305,7 +1305,7 @@ def _load_story() -> dict:
 
 def _save_story(story: dict) -> None:
     _STORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STORY_PATH.write_text(json.dumps(story, indent=2))
+    _STORY_PATH.write_text(json.dumps(story, indent=2), encoding="utf-8")
 
 
 def _handle_mc_story(args: dict, **kwargs) -> str:
@@ -1499,7 +1499,7 @@ def _handle_mc_story(args: dict, **kwargs) -> str:
         else:
             target = _BLUEPRINT_PATH
             target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(blueprint, indent=2))
+        target.write_text(json.dumps(blueprint, indent=2), encoding="utf-8")
         return f"Blueprint saved: {blueprint.get('metadata', {}).get('title', 'Untitled')}"
 
     if action == "load_blueprint":
@@ -1511,7 +1511,7 @@ def _handle_mc_story(args: dict, **kwargs) -> str:
         if not target.exists():
             return f"No blueprint found: {target.name}"
         try:
-            bp = json.loads(target.read_text())
+            bp = json.loads(target.read_text(encoding="utf-8"))
             title = bp.get("metadata", {}).get("title", "Untitled")
             phases = len(bp.get("phases", []))
             entities = len(bp.get("entities", []))
@@ -1702,7 +1702,7 @@ def _handle_mc_registry(args: dict, **kwargs) -> str:
         return "Error: minecraft-registry.json not found. Run scripts/generate-minecraft-registry.js to create it."
 
     try:
-        registry = json.loads(registry_path.read_text())
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
     except Exception as e:
         return f"Error reading registry: {e}"
 

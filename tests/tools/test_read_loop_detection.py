@@ -84,24 +84,23 @@ class TestReadLoopDetection(unittest.TestCase):
 
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_fourth_consecutive_read_is_blocked(self, _mock_ops):
-        """4th consecutive read of the same region is BLOCKED — no content."""
+    def test_fourth_consecutive_read_keeps_warning(self, _mock_ops):
+        """4th consecutive read remains available with an escalating warning."""
         for _ in range(3):
             read_file_tool("/tmp/test.py", task_id="t1")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("error", result)
-        self.assertIn("BLOCKED", result["error"])
-        self.assertIn("4 times", result["error"])
-        self.assertNotIn("content", result)
+        self.assertIn("_warning", result)
+        self.assertIn("4 times", result["_warning"])
+        self.assertIn("content", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_fifth_consecutive_read_still_blocked(self, _mock_ops):
-        """Subsequent reads remain blocked with incrementing count."""
+    def test_fifth_consecutive_read_keeps_warning(self, _mock_ops):
+        """Subsequent reads remain available with an incrementing warning."""
         for _ in range(4):
             read_file_tool("/tmp/test.py", task_id="t1")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("BLOCKED", result["error"])
-        self.assertIn("5 times", result["error"])
+        self.assertIn("5 times", result["_warning"])
+        self.assertIn("content", result)
 
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
