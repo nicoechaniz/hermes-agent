@@ -2,7 +2,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from acp.schema import TextContentBlock
+from acp.schema import McpServerHttp, TextContentBlock
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
@@ -16,6 +16,9 @@ class FakeAgent:
         self.disabled_toolsets = []
         self.tools = []
         self.valid_tool_names = set()
+        self._memory_enabled = False
+        self._user_profile_enabled = False
+        self._memory_manager: object | None = None
         self._supports_active_turn_redirect = True
         self.steers = []
         self.redirects = []
@@ -118,6 +121,153 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+
+
+def test_acp_tools_hides_native_memory_but_lists_provider_tool(monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.enabled_toolsets = ["memory"]
+    fake._memory_enabled = False
+    fake._user_profile_enabled = False
+    fake._memory_manager = SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {
+                "name": "librarian",
+                "description": "HMK library",
+                "parameters": {},
+            }
+        ]
+    )
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Native memory",
+                    "parameters": {},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Shell",
+                    "parameters": {},
+                },
+            },
+        ],
+    )
+
+    output = acp_agent._cmd_tools("", state)
+
+    assert "memory:" not in output
+    assert "librarian: HMK library" in output
+    assert "terminal: Shell" in output
+
+
+def test_acp_tools_respects_disabled_memory_toolset(monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.enabled_toolsets = ["memory"]
+    fake.disabled_toolsets = ["memory"]
+    fake._memory_enabled = False
+    fake._user_profile_enabled = False
+    fake._memory_manager = SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {
+                "name": "librarian",
+                "description": "HMK library",
+                "parameters": {},
+            }
+        ]
+    )
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Native memory",
+                    "parameters": {},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Shell",
+                    "parameters": {},
+                },
+            },
+        ],
+    )
+
+    output = acp_agent._cmd_tools("", state)
+
+    assert "memory:" not in output
+    assert "librarian:" not in output
+    assert "terminal: Shell" in output
+
+
+@pytest.mark.asyncio
+async def test_acp_registration_gate_failure_preserves_previous_safe_surface(
+    monkeypatch,
+):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.enabled_toolsets = ["memory"]
+    fake._memory_enabled = False
+    fake._user_profile_enabled = False
+    fake.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "librarian",
+                "description": "HMK library",
+                "parameters": {},
+            },
+        }
+    ]
+    fake.valid_tool_names = {"librarian"}
+
+    import agent.memory_manager as memory_manager
+    import model_tools
+    import tools.mcp_tool as mcp_tool
+
+    monkeypatch.setattr(mcp_tool, "register_mcp_servers", lambda config: None)
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Native memory",
+                    "parameters": {},
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        memory_manager,
+        "apply_native_memory_tool_gate",
+        lambda agent: (_ for _ in ()).throw(RuntimeError("gate failed")),
+    )
+
+    server = McpServerHttp(name="test", url="https://example.invalid", headers=[])
+    await acp_agent._register_session_mcp_servers(state, [server])
+
+    assert [tool["function"]["name"] for tool in fake.tools] == ["librarian"]
+    assert fake.valid_tool_names == {"librarian"}
 
 
 @pytest.mark.asyncio

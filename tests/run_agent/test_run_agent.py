@@ -212,7 +212,15 @@ def test_malformed_memory_config_still_builds_default_store():
 
 @pytest.fixture()
 def agent_with_memory_tool():
-    """Agent whose valid_tool_names includes 'memory'."""
+    """Agent with an enabled native store and ``memory`` in its tool surface."""
+    config = {
+        "memory": {
+            "memory_enabled": True,
+            "user_profile_enabled": False,
+            "provider": "",
+        },
+        "agent": {},
+    }
     with (
         patch(
             "run_agent.get_tool_definitions",
@@ -220,13 +228,15 @@ def agent_with_memory_tool():
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("hermes_cli.config.load_config_readonly", return_value=config),
     ):
         a = AIAgent(
             api_key="test-k...7890",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
-            skip_memory=True,
+            skip_memory=False,
         )
         a.client = MagicMock()
         return a

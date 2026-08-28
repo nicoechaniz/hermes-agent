@@ -1,10 +1,6 @@
 """Tests for `hermes memory status` CLI command.
 
-Covers:
-- Status output shows config-aware indicators instead of hardcoded 'always active'
-- memory_enabled, user_profile_enabled, and memory tool are each reflected
-- Memory tool resolution uses the canonical _get_platform_tools resolver
-- Original issue: 'Built-in: always active' was misleading when features were disabled
+Covers native store flags separately from the shared provider toolset.
 """
 
 import pytest
@@ -52,6 +48,46 @@ class TestMemoryStatusLabels:
         out = _run_cmd_status(capfd, mem_config={"memory_enabled": False})
         assert "Memory injection:" in out
         assert "disabled ✗" in out
+
+    def test_native_tool_is_suppressed_when_both_stores_are_disabled(self, capfd):
+        out = _run_cmd_status(
+            capfd,
+            mem_config={
+                "memory_enabled": False,
+                "user_profile_enabled": False,
+                "provider": "hmk-memory",
+            },
+            memory_tools={"memory"},
+        )
+
+        assert "Native memory tool: suppressed ✓ (native stores disabled)" in out
+        assert "Provider toolset:     enabled ✓" in out
+
+    def test_native_tool_is_enabled_when_a_native_store_is_enabled(self, capfd):
+        out = _run_cmd_status(
+            capfd,
+            mem_config={
+                "memory_enabled": True,
+                "user_profile_enabled": False,
+            },
+            memory_tools={"memory"},
+        )
+
+        assert "Native memory tool: enabled ✓" in out
+
+    def test_provider_toolset_disabled_is_reported_separately(self, capfd):
+        out = _run_cmd_status(
+            capfd,
+            mem_config={
+                "memory_enabled": False,
+                "user_profile_enabled": False,
+                "provider": "hmk-memory",
+            },
+            memory_tools=set(),
+        )
+
+        assert "Native memory tool: disabled ✗ (memory toolset disabled)" in out
+        assert "Provider toolset:     disabled ✗" in out
 
 
 

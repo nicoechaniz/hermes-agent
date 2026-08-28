@@ -489,19 +489,28 @@ def cmd_status(args) -> None:
     mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
     user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
 
-    # Check if the memory tool is enabled for the CLI platform via the
-    # canonical resolver and respects the check_fn gate when both stores are disabled.
+    # The memory toolset is shared by native memory and external providers.
+    # Report the model-facing native tool, not merely toolset membership.
     from hermes_cli.tools_config import _get_platform_tools
-    from tools.memory_tool import check_memory_requirements
     cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()
-    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
+    memory_toolset_enabled = "memory" in cli_tools
+    native_tool_exposed = memory_toolset_enabled and (
+        memory_enabled or user_profile_enabled
+    )
+    if native_tool_exposed:
+        native_tool_mark = "enabled ✓"
+    elif memory_toolset_enabled:
+        native_tool_mark = "suppressed ✓ (native stores disabled)"
+    else:
+        native_tool_mark = "disabled ✗ (memory toolset disabled)"
+    provider_toolset_mark = "enabled ✓" if memory_toolset_enabled else "disabled ✗"
 
     print("\nMemory status\n" + "─" * 40)
     print("  Built-in (MEMORY.md / USER.md):")
     print(f"    Memory injection:   {mem_mark}")
     print(f"    User profile:       {user_mark}")
-    print(f"    Memory tool:        {tool_mark}")
+    print(f"    Native memory tool: {native_tool_mark}")
+    print(f"  Provider toolset:     {provider_toolset_mark}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()
