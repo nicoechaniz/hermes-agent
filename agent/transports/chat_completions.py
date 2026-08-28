@@ -10,7 +10,10 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import json
+import logging
 from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
@@ -701,6 +704,30 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        # Tool choice override for proactive/agentic turns. Providers such as
+        # Kimi and DeepSeek reject forced tool use combined with thinking.
+        _tool_choice = params.get("tool_choice")
+        if _tool_choice:
+            if _tool_choice == "required":
+                _stripped_any = False
+                if "reasoning_effort" in api_kwargs:
+                    api_kwargs.pop("reasoning_effort")
+                    _stripped_any = True
+                _extra_body = api_kwargs.get("extra_body")
+                if isinstance(_extra_body, dict):
+                    for key in ("thinking", "thinking_config"):
+                        if key in _extra_body:
+                            _extra_body.pop(key)
+                            _stripped_any = True
+                    if not _extra_body:
+                        api_kwargs.pop("extra_body")
+                if _stripped_any:
+                    logger.info(
+                        "[chat_completions] Disabled thinking for "
+                        "tool_choice='required' turn."
+                    )
+            api_kwargs["tool_choice"] = _tool_choice
+
         _add_prompt_cache_key(
             api_kwargs,
             messages=sanitized,
@@ -840,6 +867,29 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body.update(v)
                 else:
                     api_kwargs[k] = v
+
+        # Tool choice override for proactive/agentic turns. The value may
+        # arrive directly or through request_overrides on the profile path.
+        _tool_choice = params.get("tool_choice")
+        if not _tool_choice and overrides:
+            _tool_choice = overrides.get("tool_choice")
+        if _tool_choice:
+            if _tool_choice == "required":
+                _stripped_any = False
+                if "reasoning_effort" in api_kwargs:
+                    api_kwargs.pop("reasoning_effort")
+                    _stripped_any = True
+                for key in ("thinking", "thinking_config"):
+                    if key in extra_body:
+                        extra_body.pop(key)
+                        _stripped_any = True
+                if _stripped_any:
+                    logger.info(
+                        "[chat_completions] Disabled thinking for "
+                        "tool_choice='required' turn (profile path)."
+                    )
+            if "tool_choice" not in api_kwargs:
+                api_kwargs["tool_choice"] = _tool_choice
 
         if extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)

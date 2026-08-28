@@ -254,6 +254,7 @@ export const applyDisplay = (
 ) => {
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
+  const t = cfg?.config?.tui ?? {}
 
   setBell(!!d.bell_on_complete)
 
@@ -281,6 +282,7 @@ export const applyDisplay = (
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
+    historyNavRequiresEmptyInput: !!t.history_nav_requires_empty_input,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),

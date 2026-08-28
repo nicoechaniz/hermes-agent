@@ -577,6 +577,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "solar-pro3": 131072,
     "solar-pro2": 65536,
     "solar-mini": 32768,
+    "kimi-k2.6": 262144,
+    "kimi-k2.5": 262144,
+    "kimi-k2": 262144,
+    "k2p6": 262144,
+    "k2p5": 262144,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).
