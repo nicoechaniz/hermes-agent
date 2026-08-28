@@ -920,6 +920,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.RELAY: lambda cfg: bool(
         cfg.extra.get("relay_url") or cfg.extra.get("url")
     ),
+    Platform.DAEMONCRAFT: lambda cfg: bool(
+        cfg.extra.get("bot_api_url") and cfg.extra.get("bot_username")
+    ),
 }
 
 

@@ -195,3 +195,29 @@ class TestSyntheticPerceiveHook:
         assert store.append_to_transcript.call_count == 2
         roles = [c.args[1]["role"] for c in store.append_to_transcript.call_args_list]
         assert roles == ["assistant", "tool"]
+
+
+def test_daemoncraft_connection_checker_requires_url_and_username():
+    from gateway.config import (
+        Platform,
+        PlatformConfig,
+        _PLATFORM_CONNECTED_CHECKERS,
+    )
+
+    checker = _PLATFORM_CONNECTED_CHECKERS[Platform.DAEMONCRAFT]
+    assert not checker(PlatformConfig(enabled=True, extra={}))
+    assert not checker(
+        PlatformConfig(enabled=True, extra={"bot_api_url": "http://localhost:9999"})
+    )
+    assert not checker(
+        PlatformConfig(enabled=True, extra={"bot_username": "TestBot"})
+    )
+    assert checker(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "bot_api_url": "http://localhost:9999",
+                "bot_username": "TestBot",
+            },
+        )
+    )
