@@ -18675,6 +18675,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._command_palette_state
         )
 
+        _history_nav_requires_empty = bool(
+            CLI_CONFIG.get("tui", {}).get(
+                "history_nav_requires_empty_input", False
+            )
+        )
+
         def _recall_without_recollapse(buf, move):
             """Run a history-navigation move, suppressing paste-collapse.
 
@@ -18690,18 +18696,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             move()
             if buf.text == before:
                 self._skip_paste_collapse = False
-        _history_nav_requires_empty = bool(CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False))
-
-        _history_nav_requires_empty = bool(CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False))
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
             buf = event.app.current_buffer
             _recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
-            if _history_nav_requires_empty and event.app.current_buffer.text:
-                return
-            _recall_without_recollapse(event.app.current_buffer, lambda: event.app.current_buffer.auto_up(count=event.arg))
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
@@ -19215,7 +19215,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             wrap_lines=True,
             scrollbar=True,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
-            scrollbar=True,
             history=FileHistory(str(self._history_file)),
             # complete_while_typing fires the completer on every keystroke. The
             # completer does blocking work — fuzzy @-file indexing shells out to
@@ -19274,7 +19273,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     terminal_columns,
                     max_height=_input_max_lines,
                 )
-
             except Exception:
                 return 1
 
