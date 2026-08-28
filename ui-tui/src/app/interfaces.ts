@@ -328,6 +328,7 @@ export interface UiState {
   // Focus view (/focus) — display-only reduced-output mode. Drives the
   // persistent `◉ focus` status-bar badge; never affects request payloads.
   focusView: boolean
+  historyNavRequiresEmptyInput: boolean
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
