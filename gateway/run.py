@@ -16642,6 +16642,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.DAEMONCRAFT:
+            from gateway.platforms.daemoncraft import (
+                DaemonCraftAdapter,
+                check_daemoncraft_requirements,
+            )
+            if not check_daemoncraft_requirements():
+                logger.warning("DaemonCraft: aiohttp not installed")
+                return None
+            return DaemonCraftAdapter(config)
+
         return None
 
     def _make_adapter_auth_check(
