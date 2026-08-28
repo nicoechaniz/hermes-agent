@@ -127,11 +127,16 @@ export interface ConfigApprovalsConfig {
   destructive_slash_confirm?: unknown
 }
 
+export interface ConfigTuiConfig {
+  history_nav_requires_empty_input?: boolean
+}
+
 export interface ConfigFullResponse {
   config?: {
     approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig
     voice?: ConfigVoiceConfig
+    tui?: ConfigTuiConfig
     paste_collapse_threshold?: number
     paste_collapse_char_threshold?: number
   }
