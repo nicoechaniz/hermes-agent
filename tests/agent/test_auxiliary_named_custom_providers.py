@@ -380,10 +380,20 @@ class TestResolveProviderClientMainRuntimeCustom:
 
         from agent.auxiliary_client import resolve_provider_client
         # main_runtime with key but no base_url → must fall through
-        client, model = resolve_provider_client(
-            "custom",
-            main_runtime={"api_key": "k", "base_url": ""},
-        )
+        # Isolate both fallback branches explicitly. Host OAuth pools (for
+        # example Copilot) are valid API-key-provider fallbacks and must not
+        # make this no-credentials case environment-dependent.
+        with patch(
+            "agent.auxiliary_client._try_custom_endpoint",
+            return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_api_key_provider",
+            return_value=(None, None),
+        ):
+            client, model = resolve_provider_client(
+                "custom",
+                main_runtime={"api_key": "k", "base_url": ""},
+            )
         # Should fall through to _try_custom_endpoint → return None,None
         # because no OPENAI_BASE_URL is set and no custom endpoint is configured
         assert client is None
