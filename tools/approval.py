@@ -3954,6 +3954,21 @@ def _run_approval_gate(
             "user_consent": False,
         }
 
+    if choice == "timeout":
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Action timed out without user response. The user "
+                f"has NOT consented to this action. Do NOT retry it, do NOT "
+                f"rephrase it, and do NOT attempt the same outcome via a "
+                f"different path. Silence is not consent."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "timeout",
+            "user_consent": False,
+        }
+
     if choice == "deny":
         return {
             "approved": False,
