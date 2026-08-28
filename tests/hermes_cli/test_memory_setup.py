@@ -89,7 +89,7 @@ def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeyp
 
 
 def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
-    """When both memory stores are disabled, Memory status reports memory tool as disabled."""
+    """Disabled native stores stay separate from the provider toolset."""
     _cfg = {"memory": {"memory_enabled": False, "user_profile_enabled": False}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: _cfg)
     # check_memory_requirements() reads the readonly loader, not load_config.
@@ -101,13 +101,14 @@ def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
     memory_setup.cmd_status(SimpleNamespace())
 
     captured = capsys.readouterr().out
-    assert "Memory tool:        disabled ✗" in captured
+    assert "Native memory tool: suppressed ✓ (native stores disabled)" in captured
+    assert "Provider toolset:     enabled ✓" in captured
     assert "Memory injection:   disabled ✗" in captured
     assert "User profile:       disabled ✗" in captured
 
 
 def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
-    """When at least one memory store is enabled, Memory status reports memory tool as enabled."""
+    """An enabled native store exposes its tool through the provider toolset."""
     _cfg = {"memory": {"memory_enabled": True, "user_profile_enabled": False}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: _cfg)
     monkeypatch.setattr(
@@ -118,6 +119,7 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     memory_setup.cmd_status(SimpleNamespace())
 
     captured = capsys.readouterr().out
-    assert "Memory tool:        enabled ✓" in captured
+    assert "Native memory tool: enabled ✓" in captured
+    assert "Provider toolset:     enabled ✓" in captured
     assert "Memory injection:   enabled ✓" in captured
     assert "User profile:       disabled ✗" in captured
