@@ -432,7 +432,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             casts_dir = _Path.home() / "Projects" / "DaemonCraft" / "agents" / "casts"
             try:
                 for cf in sorted(casts_dir.glob("*.yaml")):
-                    cfg = yaml.safe_load(cf.read_text()) or {}
+                    cfg = yaml.safe_load(cf.read_text(encoding="utf-8")) or {}
                     for a in cfg.get("agents", []):
                         name = a.get("name", "")
                         if name:
