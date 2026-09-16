@@ -463,3 +463,67 @@ def test_parentage_without_delegation_marker_is_not_worker(config):
     assert not GatewayRunner._is_delegated_completion_owner({
         "source": "telegram", "parent_session_id": "parent", "model_config": config,
     })
+
+
+@pytest.mark.parametrize('rejected_kind', ['worker', 'grandchild', 'reset_parent'])
+@pytest.mark.parametrize('rejected_first', [False, True])
+def test_mixed_batch_preserves_each_owners_boundary(
+    native_boundary, monkeypatch, tmp_path, rejected_kind, rejected_first,
+):
+    import tools.process_registry as pr
+    b = native_boundary
+    if rejected_kind == 'grandchild':
+        b.db.create_session('grandchild', source='subagent', parent_session_id='worker',
+                            model_config={'_delegate_from': 'worker'})
+        rejected_id = 'grandchild'
+    elif rejected_kind == 'reset_parent':
+        rejected_id = b.parent_id
+        b.store.reset_session(b.parent.session_key)
+    else:
+        rejected_id = 'worker'
+    foreground = b.store.lookup_by_session_key(b.parent.session_key).session_id
+    goal_before = b.db.get_meta(f'goal:{foreground}')
+    messages_before = b.db.get_messages(foreground)
+    assert asyncio.run(b.runner._classify_completion_target(rejected_id, b.parent.session_key)) == 'terminal'
+    assert asyncio.run(b.runner._classify_completion_target(foreground, b.parent.session_key)) == 'deliver'
+
+    monkeypatch.setattr(pr, 'CHECKPOINT_PATH', tmp_path / 'processes.json')
+    registry = pr.ProcessRegistry()
+    monkeypatch.setattr(pr, 'process_registry', registry)
+    b.runner._completion_notification_batch_window = 0
+    owners = [('allowed', foreground), ('rejected', rejected_id)]
+    if rejected_first:
+        owners.reverse()
+    watchers = []
+    for label, owner_id in owners:
+        sid = 'proc_' + label
+        registry._finished[sid] = pr.ProcessSession(
+            id=sid, command='bounded fixture', task_id='default', started_at=1234.5,
+            exited=True, exit_code=0, output_buffer=label.upper() + '_OWNER_PAYLOAD\n',
+            parent_session_id=owner_id, notify_on_complete=True,
+        )
+        watchers.append({
+            'session_id': sid, 'check_interval': 0, 'notify_on_complete': True,
+            'session_key': b.parent.session_key, 'platform': 'telegram',
+            'chat_type': 'dm', 'chat_id': '123', 'thread_id': '456',
+        })
+
+    async def run_watchers():
+        await asyncio.wait_for(asyncio.gather(*(
+            b.runner._run_process_watcher(w) for w in watchers
+        )), timeout=3)
+    asyncio.run(run_watchers())
+
+    # Positive control: legitimate parent output still reaches native resolution.
+    assert b.resolved == [foreground]
+    assert len(b.events) == 1
+    assert 'ALLOWED_OWNER_PAYLOAD' in b.events[0].text
+    assert b.store.lookup_by_session_key(b.parent.session_key).session_id == foreground
+    assert b.db.get_messages(foreground) == messages_before
+    assert b.db.get_meta(f'goal:{foreground}') == goal_before
+    assert registry.get('proc_rejected').parent_session_id == rejected_id
+    assert registry.get('proc_rejected').output_buffer == 'REJECTED_OWNER_PAYLOAD\n'
+    assert 'REJECTED_OWNER_PAYLOAD' not in b.events[0].text, 'terminal owner payload crossed into foreground batch'
+    identities = b.runner._completion_deliveries_delivered
+    assert any(identity[1] == 'proc_allowed' for identity in identities)
+    assert all(identity[1] != 'proc_rejected' for identity in identities)

@@ -26371,8 +26371,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _completion_notification_batch_key(evt: dict) -> tuple[str, ...]:
-        """Return a routing-complete key for short-window process fan-in."""
+        """Batch only completions with the same route and physical owner."""
+        # One accepted event authorizes the whole batch. Inherited transport
+        # alone must never let another owner's payload or identity piggyback.
         return tuple(str(evt.get(field) or "") for field in (
+            "parent_session_id",
             "session_key",
             "platform",
             "chat_type",
