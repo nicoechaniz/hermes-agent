@@ -528,7 +528,10 @@ def _plugin_command_handler(name: str):
 
 
 def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+    plugins = _tools_mod("hermes_cli.plugins")
+    return str(plugins.resolve_plugin_command_result(
+        plugins.call_plugin_command_handler(handler, arg, command_context=None)
+    ) or "")
 
 
 @contextlib.contextmanager
@@ -568,8 +571,10 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
-        with contextlib.suppress(Exception):
+        try:
             return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+        except Exception:
+            return _ok(rid, {"type": "plugin", "output": "Plugin command failed."})
     return None
 
 
@@ -906,8 +911,8 @@ def _(rid, params: dict) -> dict:
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
             return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+        except Exception:
+            return _ok(rid, {"output": "Plugin command failed."})
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

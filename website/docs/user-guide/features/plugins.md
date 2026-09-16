@@ -92,6 +92,78 @@ The model-facing tool description belongs in `schema["description"]`. The option
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
+## Optional slash-command provenance
+
+Legacy `ctx.register_command()` handlers still receive exactly one `raw_args`
+argument, with the existing surface's argument parsing unchanged. A handler can
+opt in by declaring a keyword-capable `command_context` parameter (or `**kwargs`):
+
+```python
+from hermes_cli.plugins import PluginCommandContext
+
+
+def status(raw_args: str, *, command_context: PluginCommandContext | None = None):
+    if command_context is None:
+        return "Authenticated gateway metadata is unavailable on this invocation."
+    return f"Gateway actor: {command_context.user_id}; chat: {command_context.chat_id}"
+
+
+def register(ctx):
+    ctx.register_command("origin-status", status, "Show command origin metadata")
+```
+
+The gateway supplies a frozen scalar-only `PluginCommandContext` **after sender
+authorization and slash-command access checks**. It contains `platform`,
+`user_id`, `user_name`, `chat_id`, `chat_name`, `chat_type`, `thread_id`, `guild_id`,
+`message_id`, optional existing `session_id`, and `authorized`. Commands do not
+create or touch a conversation merely to obtain an ID. `message_id` prefers the
+source's triggering message ID; `platform_update_id` retains a native update ID
+when the adapter supplies one.
+
+Additional metadata describes `adapter_id` (adapter implementation),
+`adapter_profile` (transport-owning profile, not the routed conversation profile),
+and optional `account_id`. Currently only a native Telegram adapter's initialized,
+cached bot ID is extracted as `account_id`; unsupported/unavailable account
+identities are `None`, never inferred from credentials, user IDs, or environment.
+`adapter_profile=None` denotes the default or unavailable profile; neither it nor
+`adapter_id` is a globally unique account identifier.
+
+`original_text` is the text **at gateway-runner ingress**, before gateway hooks
+and quick-command aliases; `dispatched_text` is the final command text.
+`rewritten` records a difference between those values. Adapter-side normalization
+has already happened and is not reconstructed. Identity/transport changes during
+hooks suppress the context rather than authenticating a rewritten identity.
+Internal events, classic CLI, TUI `command.dispatch` and `slash.exec` receive
+`None`; local session IDs and transport access do not manufacture a human actor.
+
+`origin_kind` conservatively reports known `bot`, Telegram `forward`, marked
+`echo`/projection, startup `replay`, `relay`, or otherwise `gateway` ingress.
+These are best-effort exclusions, **not a complete cross-platform origin
+attestation**. `is_bot` preserves the normalized adapter flag. In particular,
+**`human_verified` is always false**: `authorized=True` means admitted by gateway
+policy, not verified human authorship, an admin grant, or consent. Missing flags,
+`origin_kind="gateway"`, and an unrewritten command do not establish human origin.
+
+Registered plugin commands dispatch even while an agent is busy, without
+interrupting it or queuing command text as model input. Handler failures are
+terminal on gateway/CLI/TUI: they are not retried with a different signature and
+cannot fall through to a skill or model prompt. Async cancellation propagates.
+
+This is an in-process metadata extension, not a human-approval/signing service or
+a security boundary against installed plugins or agent shell access. Sensitive
+consumers must independently authenticate/pin the human and ingress, display the
+complete immutable request, bind a short-lived single-use confirmation, and keep
+signing custody outside model-controlled execution. No command context is added
+to model-tool schemas or ambient tool context.
+
+This fork ports SeoYeonKim (`westkite1201`)'s API and tests from
+[NousResearch/hermes-agent#51596](https://github.com/NousResearch/hermes-agent/pull/51596)
+(owning issue [#51555](https://github.com/NousResearch/hermes-agent/issues/51555)),
+with local dispatch/provenance hardening for
+[AlterMundi/daimon-matrix#138](https://github.com/AlterMundi/daimon-matrix/issues/138).
+It does not claim the upstream proposal is merged or that the downstream human
+approval service is complete.
+
 ## What plugins can do
 
 Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.

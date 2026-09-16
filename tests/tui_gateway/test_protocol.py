@@ -1270,6 +1270,53 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("command.dispatch", {"name": "audit", "arg": "status"}),
+        ("slash.exec", {"command": "audit status"}),
+    ],
+)
+def test_plugin_commands_receive_none_gateway_context(server, method, params):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    received = []
+
+    def handler(raw_args, *, command_context):
+        received.append((raw_args, command_context))
+        return "ok"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler", return_value=handler
+    ):
+        resp = server.handle_request(
+            {"id": "r1", "method": method, "params": {**params, "session_id": sid}}
+        )
+
+    assert resp["result"]["output"] == "ok"
+    assert received == [("status", None)]
+
+
+@pytest.mark.parametrize("method, params", [
+    ("command.dispatch", {"name": "audit", "arg": "approve"}),
+    ("slash.exec", {"command": "audit approve"}),
+])
+def test_plugin_failure_is_terminal(server, method, params):
+    server._sessions["test-session"] = {"session_key": "test-session", "agent": None}
+    def broken(args, *, command_context):
+        assert command_context is None
+        raise RuntimeError("secret-detail")
+    with patch("hermes_cli.plugins.get_plugin_command_handler", return_value=broken), patch(
+        "agent.skill_bundles.resolve_bundle_command_key",
+        side_effect=AssertionError("plugin failure fell through to skill routing"),
+    ) as fallback:
+        result = server.handle_request({"id": "fail", "method": method,
+            "params": {**params, "session_id": "test-session"}})
+    if method == "command.dispatch":
+        fallback.assert_not_called()
+    assert result["result"]["output"] == "Plugin command failed."
+
+
 def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """slash.exec must resolve get_skill_commands() against the session's own
     profile_home rather than the gateway process's ambient HERMES_HOME
