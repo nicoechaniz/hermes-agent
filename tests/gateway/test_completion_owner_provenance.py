@@ -142,6 +142,18 @@ def test_source_only_worker_is_not_a_compression_delivery_tip(native_boundary, b
         assert b.store._entries[b.parent.session_key].session_id == b.parent_id
 
 
+def test_queued_completion_cannot_recover_route_into_source_only_worker(native_boundary):
+    b = native_boundary
+    b.db.end_session(b.parent_id, "compression")
+    b.db.create_session("legacy-worker", source="subagent", parent_session_id=b.parent_id)
+    event = MessageEvent(text="queued result", source=b.source, internal=True,
+                         metadata={"gateway_session_id": b.parent_id})
+    asyncio.run(b.runner.adapters[Platform.TELEGRAM].handle_message(event))
+    assert b.resolved == []
+    assert b.store.lookup_by_session_key(b.parent.session_key).session_id == b.parent_id
+    assert b.db.get_session(b.parent_id)["end_reason"] == "compression"
+
+
 @pytest.mark.parametrize("owner", ["parent", "worker", "grandchild"])
 @pytest.mark.parametrize("count", [1, 3])
 def test_native_watchers_settle_without_forwarding_workers(
@@ -273,6 +285,27 @@ def test_compression_pin_cannot_cross_new_route(native_boundary):
     assert b.db.get_session(fresh_id)["ended_at"] is None
 
 
+@pytest.mark.parametrize("boundary", ["receiver", "native_delivery", "tip", "preflight"])
+def test_reset_of_stale_compression_route_is_not_continuation(native_boundary, boundary):
+    b = native_boundary
+    b.db.end_session(b.parent_id, "compression")
+    b.db.create_session("tip", source="telegram", parent_session_id=b.parent_id)
+    # /new may run before the routing index catches up to the compression tip.
+    fresh = b.store.reset_session(b.parent.session_key)
+    fresh_id = fresh.session_id
+    if boundary == "tip":
+        assert b.db.get_compression_tip(b.parent_id) == "tip"
+    elif boundary == "preflight":
+        assert asyncio.run(b.runner._classify_completion_target(b.parent_id, b.parent.session_key)) == "terminal"
+    elif boundary == "receiver":
+        assert asyncio.run(b.runner._resolve_async_delegation_session(fresh, b.parent_id)) is None
+    else:
+        asyncio.run(b.runner._deliver_completion_notification("stale", _completion(b, b.parent_id)))
+        assert b.resolved == []
+    assert b.store.lookup_by_session_key(b.parent.session_key).session_id == fresh_id
+    assert b.db.get_session(fresh_id)["ended_at"] is None
+
+
 def test_manual_resume_store_operation_is_separate_from_notification_authority(native_boundary):
     b = native_boundary
     # /resume authorization belongs to its command handler, not this storage
@@ -340,6 +373,84 @@ def test_receiver_rechecks_after_bound_worker_preflight_and_new(native_boundary)
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == fresh_id
     assert b.db.get_session("worker")["end_reason"] == "session_reset"
     assert b.db.get_session(fresh_id)["ended_at"] is None
+
+
+@pytest.mark.parametrize("advance_route", [False, True])
+def test_resumed_foreground_delayed_completion_survives_rotation(native_boundary, monkeypatch, advance_route):
+    b = native_boundary
+    b.db.record_gateway_session_peer(
+        "worker", source="telegram", user_id="123", chat_id="123",
+        chat_type="dm", thread_id="456", session_key=b.parent.session_key,
+    )
+    for hook in ("_release_running_agent_state", "_clear_conversation_scope", "_evict_cached_agent"):
+        monkeypatch.setattr(b.runner, hook, lambda *_a, **_kw: None)
+    confirmation = asyncio.run(b.runner._handle_resume_command(
+        MessageEvent(text="/resume worker", source=b.source)))
+    assert "resumed" in confirmation.lower()
+    provenance = b.db.get_session("worker")["model_config"]
+    b.db.publish_compression_child(
+        parent_session_id="worker", child_session_id="foreground-tip",
+        source="telegram", messages=[{"role": "user", "content": "Continue the human goal"}],
+        model_config={"max_iterations": 250}, require_compression_lease=False,
+    )
+    assert b.db.get_compression_tip("worker") == "foreground-tip"
+    if advance_route:
+        assert b.store.advance_compression_session(b.parent.session_key, "worker", "foreground-tip")
+    result = asyncio.run(b.runner._deliver_completion_notification("delayed own process", _completion(b)))
+    assert result is True
+    assert b.store.lookup_by_session_key(b.parent.session_key).session_id == "foreground-tip"
+    assert b.db.get_session("foreground-tip")["ended_at"] is None
+    assert b.resolved == ["foreground-tip"]
+    assert b.db.get_session("worker")["model_config"] == provenance
+
+
+@pytest.mark.parametrize("route", ["worker", "middle", "foreground-tip"])
+def test_resumed_owner_pin_survives_multiple_native_rotations(native_boundary, route):
+    b = native_boundary
+    b.store.switch_session(b.parent.session_key, "worker")
+    for parent, child in (("worker", "middle"), ("middle", "foreground-tip")):
+        assert b.db.try_acquire_compression_lock(parent, "compressor")
+        b.db.publish_compression_child(
+            parent_session_id=parent, child_session_id=child, source="telegram",
+            model_config={"max_iterations": 250}, compression_lock_holder="compressor",
+            messages=[{"role": "user", "content": "Continue the human goal"}],
+        )
+    if route != "worker":
+        b.store.advance_compression_session(b.parent.session_key, "worker", route)
+    goals.save_goal("foreground-tip", goals.GoalState(goal="current human goal"))
+    assert asyncio.run(b.runner._deliver_completion_notification("backlog", _completion(b))) is True
+    assert b.resolved == ["foreground-tip"]
+    assert goals.load_goal("foreground-tip").goal == "current human goal"
+    assert b.db.get_messages("foreground-tip")[0]["content"] == "Continue the human goal"
+
+
+@pytest.mark.parametrize("owner", ["worker", "grandchild", "legacy-worker"])
+@pytest.mark.parametrize("foreign_route", [False, True])
+def test_worker_compression_is_not_foreground_adoption(native_boundary, owner, foreign_route):
+    b = native_boundary
+    if owner == "grandchild":
+        b.db.create_session(owner, source="subagent", parent_session_id="worker",
+                            model_config={"_delegate_from": "worker"})
+    elif owner == "legacy-worker":
+        b.db.create_session(owner, source="subagent", parent_session_id=b.parent_id)
+    # Even a marker-free tip is insufficient: this event's actual route must
+    # own the pin's compression lineage, not merely inherit transport metadata.
+    assert b.db.try_acquire_compression_lock(owner, "compressor")
+    b.db.publish_compression_child(
+        parent_session_id=owner, child_session_id="worker-tip", source="telegram",
+        model_config={"max_iterations": 250}, compression_lock_holder="compressor",
+        messages=[{"role": "user", "content": "worker-only summary"}],
+    )
+    if foreign_route:
+        other = b.store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="999", user_id="999", chat_type="dm"))
+        b.store.switch_session(other.session_key, "worker-tip")
+    assert asyncio.run(b.runner._deliver_completion_notification("wrong route", _completion(b, owner))) is None
+    event = MessageEvent(text="queued worker", source=b.source, internal=True,
+                         metadata={"gateway_session_id": owner})
+    asyncio.run(b.runner.adapters[Platform.TELEGRAM].handle_message(event))
+    _assert_foreground_unchanged(b)
+    assert b.resolved == []
 
 
 @pytest.mark.parametrize("config", [{"_delegate_from": "parent"}, '{"_delegate_from":"parent"}'])

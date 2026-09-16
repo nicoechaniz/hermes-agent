@@ -16842,6 +16842,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             self._is_delegated_completion_owner(pinned_row)
             and pinned_session_id != session_entry.session_id
+            # A resumed worker-origin foreground may have rotated since the
+            # process started. Its compression path below must prove ownership
+            # of this route; provenance alone must not reject that old pin.
+            and not (pinned_row.get("ended_at") and pinned_row.get("end_reason") == "compression")
         ):
             logger.warning(
                 "Dropping completion pin for delegated owner %s; "
@@ -16923,26 +16927,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
-            route_owns_lineage = session_entry.session_id in {
-                pinned_session_id,
-                target_session_id,
-            }
-            if not route_owns_lineage:
-                # A long-running delegation may survive multiple compression
-                # rotations.  Accept an intermediate stale route only when its
-                # own verified compression tip is the same live target.
-                try:
-                    route_row = await session_db.get_session(session_entry.session_id)
-                    route_tip = (
-                        await session_db.get_compression_tip(session_entry.session_id)
-                        if route_row is not None
-                        and route_row.get("ended_at")
-                        and route_row.get("end_reason") == "compression"
-                        else None
-                    )
-                except Exception:
-                    route_tip = None
-                route_owns_lineage = route_tip == target_session_id
+            try:
+                route_owns_lineage = await self._completion_route_owns_lineage(
+                    session_entry.session_id, pinned_session_id, target_session_id,
+                )
+            except Exception:
+                route_owns_lineage = False
 
             if not route_owns_lineage:
                 logger.warning(
@@ -19696,6 +19686,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
         else:
+            # Queued native pins can bypass producer preflight. Check before
+            # get_or_create_session: its compression recovery may move the
+            # route, too early for the resolver's defensive check below.
+            if pinned_session_id and bool(getattr(event, "internal", False)):
+                verdict = await self._classify_completion_target(
+                    pinned_session_id, self._session_key_for_source(source),
+                )
+                if verdict != "deliver":
+                    logger.warning("Dropping queued completion before route recovery: %s", verdict)
+                    return
             # Internal wakes must observe reset policy without becoming user
             # activity themselves. Otherwise periodic Kanban/process
             # notifications keep the stable routing key alive across every
@@ -26077,6 +26077,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return False
         return isinstance(config, dict) and bool(config.get("_delegate_from"))
 
+    async def _completion_route_owns_lineage(
+        self, route_session_id: str, pinned_session_id: str, tip_session_id: str,
+    ) -> bool:
+        """Match an exact route to an already verified compression delivery tip.
+
+        Only the pin, tip, or a compression-ended row reaching that same tip
+        owns the conversation. Inherited peer fields and arbitrary parent links
+        never establish this relationship. Shared by preflight and consumption.
+        """
+        if route_session_id in {pinned_session_id, tip_session_id}:
+            return True
+        session_db = cast(Any, self._session_db)
+        route_row = await session_db.get_session(route_session_id)
+        return bool(
+            route_row is not None
+            and route_row.get("ended_at")
+            and route_row.get("end_reason") == "compression"
+            and await session_db.get_compression_tip(route_session_id) == tip_session_id
+        )
+
     async def _classify_completion_target(
         self, parent_session_id: str, session_key: str = "",
     ) -> str:
@@ -26111,7 +26131,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "retry"
         if parent is None:
             return "terminal"
-        if self._is_delegated_completion_owner(parent):
+        delegated_owner = self._is_delegated_completion_owner(parent)
+        foreground = None
+        if delegated_owner:
             # /resume is separately authorized and may already have selected
             # this worker-origin session. Keep its provenance, but permit its
             # OWN completions. A row's inherited peer fields are not a binding:
@@ -26124,7 +26146,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Completion foreground lookup failed", exc_info=True)
                 return "retry"
-            if foreground is None or foreground.session_id != parent_session_id:
+            if foreground is None or (
+                foreground.session_id != parent_session_id
+                and not (parent.get("ended_at") and parent.get("end_reason") == "compression")
+            ):
                 logger.warning(
                     "Suppressing gateway notification for delegated owner %s; "
                     "inherited transport is not foreground authority. No forwarding; "
@@ -26151,7 +26176,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "terminal"
             return "deliver"
         try:
+            if session_key and not delegated_owner:
+                foreground = await self.async_session_store.lookup_by_session_key(session_key)
             tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            # Compression ownership is route-scoped even when source metadata
+            # no longer identifies an old worker, or /new left a stale parent.
+            if (delegated_owner or session_key) and (
+                foreground is None
+                or not await self._completion_route_owns_lineage(
+                    foreground.session_id, parent_session_id, tip_session_id or parent_session_id,
+                )
+            ):
+                return "terminal"
             if not tip_session_id or tip_session_id == parent_session_id:
                 # Rotation caught mid-flight: parent is compression-ended but
                 # its continuation isn't visible yet. Retry, don't drop.

@@ -185,7 +185,8 @@ _BRANCH_CHILD_SQL = (
 _COMPRESSION_CHILD_SQL = (
     "EXISTS (SELECT 1 FROM sessions p"
     "        WHERE p.id = {a}.parent_session_id"
-    "        AND p.end_reason = 'compression')"
+    "        AND p.end_reason = 'compression'"
+    "        AND json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NULL)"
 )
 
 
