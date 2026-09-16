@@ -1093,6 +1093,103 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+def _plugin_command_source_identity(source):
+    """Scalar identity used to detect mutation by existing gateway hooks."""
+    return tuple(getattr(source, name, None) for name in (
+        "platform", "user_id", "user_name", "user_id_alt", "chat_id", "chat_id_alt",
+        "chat_name", "chat_type", "thread_id", "guild_id", "scope_id", "profile",
+        "is_bot", "role_authorized", "delivered_via_upstream_relay",
+        "_authorization_profile_home",
+    ))
+
+
+def _snapshot_plugin_command_origin(event, adapter, adapter_profile):
+    """Private ingress snapshot, NOT an authorization decision or plugin hook.
+
+    Capture before mutable hooks; construct the public context only at the
+    post-authorization command sink. Unknown transport facts stay unavailable.
+    """
+    source = event.source
+    def scalar(value):
+        return str(value) if type(value) in (str, int) else None
+
+    platform = scalar(getattr(getattr(source, "platform", None), "value", None)) or ""
+    raw = getattr(event, "raw_message", None)
+    metadata = event.metadata if isinstance(event.metadata, dict) else {}
+    origin = "gateway"
+    if getattr(source, "delivered_via_upstream_relay", False) is True:
+        origin = "relay"
+    if getattr(source, "is_bot", False) is True:
+        origin = "bot"
+    if platform == "telegram" and raw is not None and any(
+        getattr(raw, name, None) is not None
+        for name in ("forward_origin", "forward_date", "forward_from", "forward_from_chat")
+    ):
+        origin = "forward"
+    if any(metadata.get(name) for name in ("is_echo", "echo", "projected", "projection")):
+        origin = "echo"
+    if getattr(event, "_hermes_startup_restore_replay", False) is True:
+        origin = "replay"
+    # Telegram's initialized Bot.id is a cached non-secret account identifier.
+    # Other transports have no common account contract: do not invent one from
+    # a token, routed profile, actor id, arbitrary metadata, or environment.
+    account_id = None
+    if platform == "telegram" and origin != "relay":
+        try:
+            account_id = scalar(getattr(getattr(adapter, "_bot", None), "id", None))
+        except (AttributeError, RuntimeError):
+            pass
+    values = {name: scalar(getattr(source, name, None)) for name in (
+        "user_id", "user_name", "chat_id", "chat_name", "chat_type", "thread_id", "guild_id",
+    )}
+    values.update(
+        platform=platform,
+        message_id=scalar(getattr(source, "message_id", None)) or scalar(event.message_id),
+        account_id=account_id,
+        adapter_id=(f"{type(adapter).__module__}.{type(adapter).__qualname__}" if adapter is not None else None),
+        adapter_profile=scalar(adapter_profile),
+        platform_update_id=(event.platform_update_id if type(event.platform_update_id) is int else None),
+        original_text=scalar(event.text), origin_kind=origin,
+        is_bot=getattr(source, "is_bot", False) is True,
+    )
+    return (
+        _plugin_command_source_identity(source),
+        bool(event.internal),
+        (event.user_id, event.message_id, event.platform_update_id),
+        values, adapter, adapter_profile,
+    )
+
+
+def _build_plugin_command_context(event, *, origin, adapter, adapter_profile, session_id=None):
+    """Called only after gateway authorization and command access checks.
+
+    Internal events bypass auth; identity changes cannot inherit the original
+    sender's provenance. Neither case receives an authenticated context.
+    """
+    from hermes_cli.plugins import PluginCommandContext
+
+    identity, internal, native_identity, values, original_adapter, original_profile = origin
+    if (internal or event.internal
+            or adapter is not original_adapter or adapter_profile != original_profile
+            or identity != _plugin_command_source_identity(event.source)
+            or native_identity != (event.user_id, event.message_id, event.platform_update_id)):
+        return None
+    return PluginCommandContext(
+        **values, session_id=session_id if isinstance(session_id, str) else None, authorized=True,
+        dispatched_text=event.text if isinstance(event.text, str) else None,
+        rewritten=event.text != values["original_text"],
+    )
+
+
+def _is_plugin_slash_command(event):
+    from hermes_cli.commands import resolve_command
+    from hermes_cli.plugins import get_plugin_command_handler
+
+    command = event.get_command()
+    return bool(command and resolve_command(command) is None
+                and get_plugin_command_handler(command.replace("_", "-")) is not None)
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -10361,6 +10458,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True  # handled (silently dropped); do not fall through
 
+        # The base adapter delegates non-built-in busy commands here. Keep
+        # plugin control traffic out of steer/interrupt/queues; use the same
+        # post-auth sink as idle dispatch, without changing session ownership.
+        if _is_plugin_slash_command(event):
+            try:
+                response = await self._handle_message(event)
+                adapter = self._adapter_for_source(event.source)
+                if adapter and response:
+                    anchor = self._reply_anchor_for_event(event)
+                    await adapter._send_with_retry(
+                        chat_id=event.source.chat_id, content=response, reply_to=anchor,
+                        metadata=self._thread_metadata_for_source(event.source, anchor),
+                    )
+            except Exception:
+                logger.warning("Busy plugin command failed", exc_info=True)
+            return True  # Never fall through to agent input, including send failures.
+
         effective_mode = self._effective_busy_input_mode(event.source)
 
         # --- Draining case (gateway restarting/stopping) ---
@@ -17244,6 +17358,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
 
+        _plugin_origin = _snapshot_plugin_command_origin(
+            event, self._adapter_for_source(source), self._adapter_profile_for_source(source),
+        )
+
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
@@ -17703,7 +17821,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._release_running_agent_state(_quick_key)
 
-        if self._is_session_running(_quick_key):
+        if self._is_session_running(_quick_key) and not _is_plugin_slash_command(event):
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # hermes_cli/commands.py) and dispatched through the single
@@ -18460,19 +18578,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import call_plugin_command_handler, get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
+                    denied = self._check_slash_access(source, command.replace("_", "-"))
+                    if denied is not None:
+                        return denied
+                    session_id = await asyncio.to_thread(self.session_store.peek_session_id, _quick_key)
+                    result = call_plugin_command_handler(
+                        plugin_handler, user_args,
+                        command_context=_build_plugin_command_context(
+                            event, origin=_plugin_origin, session_id=session_id,
+                            adapter=self._adapter_for_source(source),
+                            adapter_profile=self._adapter_profile_for_source(source),
+                        ),
+                    )
+                    if inspect.isawaitable(result):
                         result = await result
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
+                return "Plugin command failed."
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen
