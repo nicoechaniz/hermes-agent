@@ -16839,6 +16839,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
+        if (
+            self._is_delegated_completion_owner(pinned_row)
+            and pinned_session_id != session_entry.session_id
+        ):
+            logger.warning(
+                "Dropping completion pin for delegated owner %s; "
+                "a worker cannot acquire the foreground route via notification.",
+                pinned_session_id,
+            )
+            return None
+
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
@@ -16897,6 +16908,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 tip_row = await session_db.get_session(target_session_id)
             except Exception:
                 tip_row = None
+            if tip_row is not None and self._is_delegated_completion_owner(tip_row):
+                logger.warning(
+                    "Dropping completion with delegated compression target %s",
+                    target_session_id,
+                )
+                return None
             if tip_row is None or tip_row.get("ended_at"):
                 logger.warning(
                     "Async-delegation compression continuation %s is %s; "
@@ -26042,7 +26059,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return (evt_type, producer_id, started_at)
         return None
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
+    @staticmethod
+    def _is_delegated_completion_owner(row: dict) -> bool:
+        """Worker provenance is not gateway routing authority.
+
+        Peer refresh can rewrite source to telegram/etc.; the native delegation
+        marker survives that refresh (and worker compression). A bare parent ID
+        is NOT a delegation marker: normal compression also creates children.
+        """
+        if row.get("source") == "subagent":
+            return True
+        config = row.get("model_config") or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (TypeError, ValueError):
+                return False
+        return isinstance(config, dict) and bool(config.get("_delegate_from"))
+
+    async def _classify_completion_target(
+        self, parent_session_id: str, session_key: str = "",
+    ) -> str:
         """Classify an async-completion delivery target before adapter acceptance.
 
         Returns one of:
@@ -26052,10 +26089,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           #55578 resolver (:meth:`_resolve_async_delegation_session`) still
           owns the actual route retarget; this pre-flight only proves the
           completion is deliverable so the durable ack stays honest.
-        - ``"terminal"`` — the spawning session is gone for good (unknown, or
-          ended at an explicit user boundary such as /new). Delivery can never
-          succeed; the durable row should be terminally dropped rather than
-          falsely acknowledged as delivered or replayed forever as pending.
+        - ``"terminal"`` — the spawning session is unknown/user-closed, or a
+          delegated owner would acquire a foreground route it does not own.
+          Drop this gateway delivery, not the stored result; never forward it
+          to an arbitrary ancestor or replay it forever as pending.
         - ``"retry"`` — transient uncertainty (session DB unavailable, lookup
           error, or a compression rotation caught mid-flight before its
           continuation exists). The claim should be released so a later
@@ -26074,6 +26111,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "retry"
         if parent is None:
             return "terminal"
+        if self._is_delegated_completion_owner(parent):
+            # /resume is separately authorized and may already have selected
+            # this worker-origin session. Keep its provenance, but permit its
+            # OWN completions. A row's inherited peer fields are not a binding:
+            # consult the native route for this event's exact key instead.
+            try:
+                foreground = (
+                    await self.async_session_store.lookup_by_session_key(session_key)
+                    if session_key else None
+                )
+            except Exception:
+                logger.debug("Completion foreground lookup failed", exc_info=True)
+                return "retry"
+            if foreground is None or foreground.session_id != parent_session_id:
+                logger.warning(
+                    "Suppressing gateway notification for delegated owner %s; "
+                    "inherited transport is not foreground authority. No forwarding; "
+                    "process output/delegation records remain available.",
+                    parent_session_id,
+                )
+                return "terminal"
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
@@ -26105,6 +26163,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 parent_session_id, exc_info=True,
             )
             return "retry"
+        if tip is not None and self._is_delegated_completion_owner(tip):
+            logger.warning(
+                "Suppressing gateway notification with delegated compression target %s",
+                tip_session_id,
+            )
+            return "terminal"
         if tip is None or tip.get("ended_at"):
             return "retry"
         return "deliver"
@@ -26148,10 +26212,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # would falsely acknowledge the durable row as delivered.
                 # Verify the target here, before acceptance, and give drops an
                 # honest durable disposition.
-                verdict = await self._classify_completion_target(parent_session_id)
+                verdict = await self._classify_completion_target(
+                    parent_session_id, str(evt.get("session_key") or ""),
+                )
                 if verdict == "terminal":
                     logger.warning(
-                        "Async delegation %s targets permanently-gone session %s; "
+                        "Async delegation %s targets an ineligible gateway session %s; "
                         "terminally dropping delivery (result remains in the "
                         "delegation records).",
                         durable_delegation_id or "<legacy>", parent_session_id,
@@ -26193,12 +26259,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Legacy/unstamped events keep today's behavior and deliver.
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
-                verdict = await self._classify_completion_target(parent_session_id)
+                verdict = await self._classify_completion_target(
+                    parent_session_id, str(evt.get("session_key") or ""),
+                )
                 if verdict == "terminal":
                     logger.warning(
                         "Background process %s completion targets "
-                        "permanently-gone session %s (user boundary such as "
-                        "/new); dropping notification (output remains "
+                        "ineligible gateway session %s (closed boundary or "
+                        "non-foreground delegated owner); dropping notification (output remains "
                         "available via process(action='log')).",
                         evt.get("session_id") or "<unknown>", parent_session_id,
                     )
