@@ -6099,6 +6099,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                            SELECT 1 FROM sessions p
                            WHERE p.id = sessions.parent_session_id
                              AND p.end_reason = 'compression'
+                             AND json_extract(COALESCE(sessions.model_config, '{}'), '$._reset_from') IS NULL
                        )""",
                     (session_id,),
                 )
@@ -6165,6 +6166,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         JOIN sessions child ON child.id = lineage.id
                         JOIN sessions parent ON parent.id = child.parent_session_id
                         WHERE parent.end_reason = 'compression'
+                          AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL
                           AND json_extract(
                               COALESCE(child.model_config, '{}'),
                               '$._branched_from'
@@ -6899,8 +6901,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # continuation carries ``_delegate_from=<the delegate's own parent>``.
     # Matching markers by mere presence misclassified those real
     # continuations as delegate children (fail-open for orphan reopen,
-    # fail-closed for adoption). Bind the parent id for both markers.
+    # fail-closed for adoption). Bind the parent id for both markers. A reset
+    # marker instead identifies a separate conversation, never a continuation.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
+        "  AND json_extract(COALESCE({alias}model_config, '{{}}'), '$._reset_from') IS NULL\n"
         "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
         " '$._branched_from'), '') != ?\n"
         "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
@@ -9272,6 +9276,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       WHERE p.id = sessions.parent_session_id
                         AND p.end_reason = 'compression'
                         AND p.ended_at IS NOT NULL
+                        AND json_extract(COALESCE(sessions.model_config, '{}'), '$._reset_from') IS NULL
                   )
                   AND EXISTS (
                       SELECT 1 FROM messages m
@@ -9671,11 +9676,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         The continuation edge is the canonical one shared with
         :func:`_ephemeral_child_sql` / :meth:`set_session_archived`
         (``_COMPRESSION_CHILD_SQL``): a parent → child edge counts only when the
-        parent ended with ``end_reason = 'compression'`` and the child started
-        at or after the parent's ``ended_at``, which distinguishes continuations
-        from delegate subagents / branch children that also carry a
-        ``parent_session_id``. Expressed as a single recursive CTE rather than a
-        per-hop Python walk so the edge definition lives in exactly one place.
+        parent ended with ``end_reason = 'compression'`` and the child is not
+        marked as a separate reset conversation. Expressed as a single recursive
+        CTE rather than a per-hop Python walk so the edge definition is shared.
         """
         if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
             return False
@@ -9933,7 +9936,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         def _do(conn):
             cursor = conn.execute(
-                """
+                f"""
                 WITH RECURSIVE
                   ancestors(id) AS (
                     SELECT ?
@@ -9942,7 +9945,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -9951,7 +9954,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -10042,7 +10045,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         def _do(conn):
             cursor = conn.execute(
-                """
+                f"""
                 WITH RECURSIVE
                   ancestors(id) AS (
                     SELECT ?
@@ -10051,7 +10054,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -10060,7 +10063,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -10096,7 +10099,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         def _do(conn):
             cursor = conn.execute(
-                """
+                f"""
                 WITH RECURSIVE
                   ancestors(id) AS (
                     SELECT ?
@@ -10105,7 +10108,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -10114,7 +10117,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -10156,7 +10159,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         def _do(conn):
             cursor = conn.execute(
-                """
+                f"""
                 WITH RECURSIVE
                   ancestors(id) AS (
                     SELECT ?
@@ -10165,7 +10168,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -10174,7 +10177,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -10301,7 +10304,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         the real continuation chain.
 
         Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
+        explicit branch/delegate/tool/reset children, and prefer children that are
         themselves continuing the compression chain (``end_reason='compression'``)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
@@ -10319,7 +10322,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
+                      AND {_COMPRESSION_CHILD_SQL.format(a="child")}
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
@@ -10604,7 +10607,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE {_COMPRESSION_CHILD_SQL.format(a="child")}
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
@@ -13346,9 +13349,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
-        """True when ``session`` is a branch, delegate, or tool child of its parent.
+        """True for a branch, delegate, tool, or separate reset child.
 
-        Markers only count as a fork when they point at ``parent_session_id``.
+        Branch/delegate markers only count as a fork when they point at ``parent_session_id``.
         Compression copies ``model_config`` onto the continuation
         (``publish_compression_child`` callers pass
         ``agent._session_init_model_config``), so a delegate's continuation
@@ -13368,6 +13371,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
         if not isinstance(cfg, dict):
             return False
+        # /new keeps a parent link for history, not compression ownership.
+        if cfg.get("_reset_from") is not None:
+            return True
         parent_id = session.get("parent_session_id")
         branched = cfg.get("_branched_from")
         delegated = cfg.get("_delegate_from")
@@ -13385,9 +13391,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def get_compression_lineage(self, session_id: str) -> List[str]:
         """Return compression ancestors through tip in chronological order."""
         session = self.get_session(session_id)
-        if not session or self._is_explicit_fork_child_row(session):
-            return [session_id] if session else []
+        if not session:
+            return []
 
+        # A fork/reset is a root of its OWN compression chain. The per-edge
+        # check below fences its old parent without hiding its continuations.
         root = session
         ancestors = {root["id"]}
         while self._is_compression_child_row(root):

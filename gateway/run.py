@@ -1093,6 +1093,103 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+def _plugin_command_source_identity(source):
+    """Scalar identity used to detect mutation by existing gateway hooks."""
+    return tuple(getattr(source, name, None) for name in (
+        "platform", "user_id", "user_name", "user_id_alt", "chat_id", "chat_id_alt",
+        "chat_name", "chat_type", "thread_id", "guild_id", "scope_id", "profile",
+        "is_bot", "role_authorized", "delivered_via_upstream_relay",
+        "_authorization_profile_home",
+    ))
+
+
+def _snapshot_plugin_command_origin(event, adapter, adapter_profile):
+    """Private ingress snapshot, NOT an authorization decision or plugin hook.
+
+    Capture before mutable hooks; construct the public context only at the
+    post-authorization command sink. Unknown transport facts stay unavailable.
+    """
+    source = event.source
+    def scalar(value):
+        return str(value) if type(value) in (str, int) else None
+
+    platform = scalar(getattr(getattr(source, "platform", None), "value", None)) or ""
+    raw = getattr(event, "raw_message", None)
+    metadata = event.metadata if isinstance(event.metadata, dict) else {}
+    origin = "gateway"
+    if getattr(source, "delivered_via_upstream_relay", False) is True:
+        origin = "relay"
+    if getattr(source, "is_bot", False) is True:
+        origin = "bot"
+    if platform == "telegram" and raw is not None and any(
+        getattr(raw, name, None) is not None
+        for name in ("forward_origin", "forward_date", "forward_from", "forward_from_chat")
+    ):
+        origin = "forward"
+    if any(metadata.get(name) for name in ("is_echo", "echo", "projected", "projection")):
+        origin = "echo"
+    if getattr(event, "_hermes_startup_restore_replay", False) is True:
+        origin = "replay"
+    # Telegram's initialized Bot.id is a cached non-secret account identifier.
+    # Other transports have no common account contract: do not invent one from
+    # a token, routed profile, actor id, arbitrary metadata, or environment.
+    account_id = None
+    if platform == "telegram" and origin != "relay":
+        try:
+            account_id = scalar(getattr(getattr(adapter, "_bot", None), "id", None))
+        except (AttributeError, RuntimeError):
+            pass
+    values = {name: scalar(getattr(source, name, None)) for name in (
+        "user_id", "user_name", "chat_id", "chat_name", "chat_type", "thread_id", "guild_id",
+    )}
+    values.update(
+        platform=platform,
+        message_id=scalar(getattr(source, "message_id", None)) or scalar(event.message_id),
+        account_id=account_id,
+        adapter_id=(f"{type(adapter).__module__}.{type(adapter).__qualname__}" if adapter is not None else None),
+        adapter_profile=scalar(adapter_profile),
+        platform_update_id=(event.platform_update_id if type(event.platform_update_id) is int else None),
+        original_text=scalar(event.text), origin_kind=origin,
+        is_bot=getattr(source, "is_bot", False) is True,
+    )
+    return (
+        _plugin_command_source_identity(source),
+        bool(event.internal),
+        (event.user_id, event.message_id, event.platform_update_id),
+        values, adapter, adapter_profile,
+    )
+
+
+def _build_plugin_command_context(event, *, origin, adapter, adapter_profile, session_id=None):
+    """Called only after gateway authorization and command access checks.
+
+    Internal events bypass auth; identity changes cannot inherit the original
+    sender's provenance. Neither case receives an authenticated context.
+    """
+    from hermes_cli.plugins import PluginCommandContext
+
+    identity, internal, native_identity, values, original_adapter, original_profile = origin
+    if (internal or event.internal
+            or adapter is not original_adapter or adapter_profile != original_profile
+            or identity != _plugin_command_source_identity(event.source)
+            or native_identity != (event.user_id, event.message_id, event.platform_update_id)):
+        return None
+    return PluginCommandContext(
+        **values, session_id=session_id if isinstance(session_id, str) else None, authorized=True,
+        dispatched_text=event.text if isinstance(event.text, str) else None,
+        rewritten=event.text != values["original_text"],
+    )
+
+
+def _is_plugin_slash_command(event):
+    from hermes_cli.commands import resolve_command
+    from hermes_cli.plugins import get_plugin_command_handler
+
+    command = event.get_command()
+    return bool(command and resolve_command(command) is None
+                and get_plugin_command_handler(command.replace("_", "-")) is not None)
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -10363,6 +10460,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True  # handled (silently dropped); do not fall through
 
+        # The base adapter delegates non-built-in busy commands here. Keep
+        # plugin control traffic out of steer/interrupt/queues; use the same
+        # post-auth sink as idle dispatch, without changing session ownership.
+        if _is_plugin_slash_command(event):
+            try:
+                response = await self._handle_message(event)
+                adapter = self._adapter_for_source(event.source)
+                if adapter and response:
+                    anchor = self._reply_anchor_for_event(event)
+                    await adapter._send_with_retry(
+                        chat_id=event.source.chat_id, content=response, reply_to=anchor,
+                        metadata=self._thread_metadata_for_source(event.source, anchor),
+                    )
+            except Exception:
+                logger.warning("Busy plugin command failed", exc_info=True)
+            return True  # Never fall through to agent input, including send failures.
+
         effective_mode = self._effective_busy_input_mode(event.source)
 
         # --- Draining case (gateway restarting/stopping) ---
@@ -16778,6 +16892,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
+        if (
+            self._is_delegated_completion_owner(pinned_row)
+            and pinned_session_id != session_entry.session_id
+            # A resumed worker-origin foreground may have rotated since the
+            # process started. Its compression path below must prove ownership
+            # of this route; provenance alone must not reject that old pin.
+            and not (pinned_row.get("ended_at") and pinned_row.get("end_reason") == "compression")
+        ):
+            logger.warning(
+                "Dropping completion pin for delegated owner %s; "
+                "a worker cannot acquire the foreground route via notification.",
+                pinned_session_id,
+            )
+            return None
+
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
@@ -16836,6 +16965,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 tip_row = await session_db.get_session(target_session_id)
             except Exception:
                 tip_row = None
+            if tip_row is not None and self._is_delegated_completion_owner(tip_row):
+                logger.warning(
+                    "Dropping completion with delegated compression target %s",
+                    target_session_id,
+                )
+                return None
             if tip_row is None or tip_row.get("ended_at"):
                 logger.warning(
                     "Async-delegation compression continuation %s is %s; "
@@ -16845,26 +16980,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
-            route_owns_lineage = session_entry.session_id in {
-                pinned_session_id,
-                target_session_id,
-            }
-            if not route_owns_lineage:
-                # A long-running delegation may survive multiple compression
-                # rotations.  Accept an intermediate stale route only when its
-                # own verified compression tip is the same live target.
-                try:
-                    route_row = await session_db.get_session(session_entry.session_id)
-                    route_tip = (
-                        await session_db.get_compression_tip(session_entry.session_id)
-                        if route_row is not None
-                        and route_row.get("ended_at")
-                        and route_row.get("end_reason") == "compression"
-                        else None
-                    )
-                except Exception:
-                    route_tip = None
-                route_owns_lineage = route_tip == target_session_id
+            try:
+                route_owns_lineage = await self._completion_route_owns_lineage(
+                    session_entry.session_id, pinned_session_id, target_session_id,
+                )
+            except Exception:
+                route_owns_lineage = False
 
             if not route_owns_lineage:
                 logger.warning(
@@ -17296,6 +17417,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
+
+        _plugin_origin = _snapshot_plugin_command_origin(
+            event, self._adapter_for_source(source), self._adapter_profile_for_source(source),
+        )
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -17756,7 +17881,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._release_running_agent_state(_quick_key)
 
-        if self._is_session_running(_quick_key):
+        if self._is_session_running(_quick_key) and not _is_plugin_slash_command(event):
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # hermes_cli/commands.py) and dispatched through the single
@@ -18513,19 +18638,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import call_plugin_command_handler, get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
+                    denied = self._check_slash_access(source, command.replace("_", "-"))
+                    if denied is not None:
+                        return denied
+                    session_id = await asyncio.to_thread(self.session_store.peek_session_id, _quick_key)
+                    result = call_plugin_command_handler(
+                        plugin_handler, user_args,
+                        command_context=_build_plugin_command_context(
+                            event, origin=_plugin_origin, session_id=session_id,
+                            adapter=self._adapter_for_source(source),
+                            adapter_profile=self._adapter_profile_for_source(source),
+                        ),
+                    )
+                    if inspect.isawaitable(result):
                         result = await result
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
+                return "Plugin command failed."
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen
@@ -19602,6 +19739,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
         else:
+            # Queued native pins can bypass producer preflight. Check before
+            # get_or_create_session: its compression recovery may move the
+            # route, too early for the resolver's defensive check below.
+            if pinned_session_id and bool(getattr(event, "internal", False)):
+                verdict = await self._classify_completion_target(
+                    pinned_session_id, self._session_key_for_source(source),
+                )
+                if verdict != "deliver":
+                    logger.warning("Dropping queued completion before route recovery: %s", verdict)
+                    return
             # Internal wakes must observe reset policy without becoming user
             # activity themselves. Otherwise periodic Kanban/process
             # notifications keep the stable routing key alive across every
@@ -25966,7 +26113,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return (evt_type, producer_id, started_at)
         return None
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
+    @staticmethod
+    def _is_delegated_completion_owner(row: dict) -> bool:
+        """Worker provenance is not gateway routing authority.
+
+        Peer refresh can rewrite source to telegram/etc.; the native delegation
+        marker survives that refresh (and worker compression). A bare parent ID
+        is NOT a delegation marker: normal compression also creates children.
+        """
+        if row.get("source") == "subagent":
+            return True
+        config = row.get("model_config") or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (TypeError, ValueError):
+                return False
+        return isinstance(config, dict) and bool(config.get("_delegate_from"))
+
+    async def _completion_route_owns_lineage(
+        self, route_session_id: str, pinned_session_id: str, tip_session_id: str,
+    ) -> bool:
+        """Match an exact route to an already verified compression delivery tip.
+
+        Only the pin, tip, or a compression-ended row reaching that same tip
+        owns the conversation. Inherited peer fields and arbitrary parent links
+        never establish this relationship. Shared by preflight and consumption.
+        """
+        if route_session_id in {pinned_session_id, tip_session_id}:
+            return True
+        session_db = cast(Any, self._session_db)
+        route_row = await session_db.get_session(route_session_id)
+        return bool(
+            route_row is not None
+            and route_row.get("ended_at")
+            and route_row.get("end_reason") == "compression"
+            and await session_db.get_compression_tip(route_session_id) == tip_session_id
+        )
+
+    async def _classify_completion_target(
+        self, parent_session_id: str, session_key: str = "",
+    ) -> str:
         """Classify an async-completion delivery target before adapter acceptance.
 
         Returns one of:
@@ -25976,10 +26163,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           #55578 resolver (:meth:`_resolve_async_delegation_session`) still
           owns the actual route retarget; this pre-flight only proves the
           completion is deliverable so the durable ack stays honest.
-        - ``"terminal"`` — the spawning session is gone for good (unknown, or
-          ended at an explicit user boundary such as /new). Delivery can never
-          succeed; the durable row should be terminally dropped rather than
-          falsely acknowledged as delivered or replayed forever as pending.
+        - ``"terminal"`` — the spawning session is unknown/user-closed, or a
+          delegated owner would acquire a foreground route it does not own.
+          Drop this gateway delivery, not the stored result; never forward it
+          to an arbitrary ancestor or replay it forever as pending.
         - ``"retry"`` — transient uncertainty (session DB unavailable, lookup
           error, or a compression rotation caught mid-flight before its
           continuation exists). The claim should be released so a later
@@ -25998,6 +26185,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "retry"
         if parent is None:
             return "terminal"
+        delegated_owner = self._is_delegated_completion_owner(parent)
+        foreground = None
+        if delegated_owner:
+            # /resume is separately authorized and may already have selected
+            # this worker-origin session. Keep its provenance, but permit its
+            # OWN completions. A row's inherited peer fields are not a binding:
+            # consult the native route for this event's exact key instead.
+            try:
+                foreground = (
+                    await self.async_session_store.lookup_by_session_key(session_key)
+                    if session_key else None
+                )
+            except Exception:
+                logger.debug("Completion foreground lookup failed", exc_info=True)
+                return "retry"
+            if foreground is None or (
+                foreground.session_id != parent_session_id
+                and not (parent.get("ended_at") and parent.get("end_reason") == "compression")
+            ):
+                logger.warning(
+                    "Suppressing gateway notification for delegated owner %s; "
+                    "inherited transport is not foreground authority. No forwarding; "
+                    "process output/delegation records remain available.",
+                    parent_session_id,
+                )
+                return "terminal"
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
@@ -26017,7 +26230,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "terminal"
             return "deliver"
         try:
+            if session_key and not delegated_owner:
+                foreground = await self.async_session_store.lookup_by_session_key(session_key)
             tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            # Compression ownership is route-scoped even when source metadata
+            # no longer identifies an old worker, or /new left a stale parent.
+            if (delegated_owner or session_key) and (
+                foreground is None
+                or not await self._completion_route_owns_lineage(
+                    foreground.session_id, parent_session_id, tip_session_id or parent_session_id,
+                )
+            ):
+                return "terminal"
             if not tip_session_id or tip_session_id == parent_session_id:
                 # Rotation caught mid-flight: parent is compression-ended but
                 # its continuation isn't visible yet. Retry, don't drop.
@@ -26029,6 +26253,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 parent_session_id, exc_info=True,
             )
             return "retry"
+        if tip is not None and self._is_delegated_completion_owner(tip):
+            logger.warning(
+                "Suppressing gateway notification with delegated compression target %s",
+                tip_session_id,
+            )
+            return "terminal"
         if tip is None or tip.get("ended_at"):
             return "retry"
         return "deliver"
@@ -26072,10 +26302,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # would falsely acknowledge the durable row as delivered.
                 # Verify the target here, before acceptance, and give drops an
                 # honest durable disposition.
-                verdict = await self._classify_completion_target(parent_session_id)
+                verdict = await self._classify_completion_target(
+                    parent_session_id, str(evt.get("session_key") or ""),
+                )
                 if verdict == "terminal":
                     logger.warning(
-                        "Async delegation %s targets permanently-gone session %s; "
+                        "Async delegation %s targets an ineligible gateway session %s; "
                         "terminally dropping delivery (result remains in the "
                         "delegation records).",
                         durable_delegation_id or "<legacy>", parent_session_id,
@@ -26117,12 +26349,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Legacy/unstamped events keep today's behavior and deliver.
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
-                verdict = await self._classify_completion_target(parent_session_id)
+                verdict = await self._classify_completion_target(
+                    parent_session_id, str(evt.get("session_key") or ""),
+                )
                 if verdict == "terminal":
                     logger.warning(
                         "Background process %s completion targets "
-                        "permanently-gone session %s (user boundary such as "
-                        "/new); dropping notification (output remains "
+                        "ineligible gateway session %s (closed boundary or "
+                        "non-foreground delegated owner); dropping notification (output remains "
                         "available via process(action='log')).",
                         evt.get("session_id") or "<unknown>", parent_session_id,
                     )
@@ -26191,8 +26425,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _completion_notification_batch_key(evt: dict) -> tuple[str, ...]:
-        """Return a routing-complete key for short-window process fan-in."""
+        """Batch only completions with the same route and physical owner."""
+        # One accepted event authorizes the whole batch. Inherited transport
+        # alone must never let another owner's payload or identity piggyback.
         return tuple(str(evt.get(field) or "") for field in (
+            "parent_session_id",
             "session_key",
             "platform",
             "chat_type",
