@@ -8,12 +8,13 @@ here; full developer notes live in `AGENTS.md`, user-facing docs under
 
 Spawn a subagent with an isolated context + terminal session.
 
-- **Single:** `delegate_task(goal, context)`.
-- **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
-  parallel, capped by `delegation.max_concurrent_children` (default 3).
-- **Background:** `delegate_task(background=true)` returns a handle
-  immediately and keeps the parent loop going; the child's result
-  re-enters the conversation as a new turn when it finishes.
+- **Single:** `delegate_task(tasks=[{goal, context}])`.
+- **Batch:** put independent tasks in the same `tasks` array. The configured
+  `delegation.max_concurrent_children` controls concurrency; inspect the live
+  tool schema/config rather than assuming a fixed limit.
+- **Background:** dispatch returns a handle immediately; do not pass an
+  unsupported `background` argument. Results re-enter through the completion
+  delivery path. Use `action=list/steer/stop` for live control, not polling.
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** A backgrounded child is still process-local — if the
@@ -36,11 +37,17 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
   job), `context_from` (chain job A's output into job B), `workdir`
   (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
   multi-platform delivery.
-- **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
-  prevents duplicate ticks across processes, cron sessions pass
-  `skip_memory=True` by default, and cron deliveries are framed with a
-  header/footer instead of being mirrored into the target gateway
-  session (keeps role alternation intact).
+- **Execution/continuity:** inspect the installed scheduler and current docs.
+  The inspected fork `af66bdec` (2026-09-17) uses a default 600-second
+  **inactivity** timeout, not a three-minute wall-clock cutoff; active jobs may
+  run longer (`HERMES_CRON_TIMEOUT` controls inactivity). It constructs agents
+  with `skip_memory=False`, loads project context when `workdir` is supplied,
+  and supports scoped origin-session mirroring/attachment. A fresh cron run
+  does not automatically inherit the current conversation; provide a
+  self-contained brief and use supported continuity/attachment options.
+  See `cron/scheduler.py` agent construction and delivery paths; preserve
+  schedule-claim/lock protections and do not equate delivered output with
+  completion of the broader human task.
 
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
 
