@@ -53,6 +53,7 @@ PLATFORMS = {k: {"label": info.label, "default_toolset": info.default_toolset} f
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
+    ("kimi_webbridge",  "🌉 Kimi WebBridge",           "real browser control via Kimi extension"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
@@ -92,9 +93,12 @@ def gui_toolset_label(label: str) -> str:
     return text
 
 
-# OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
-# auto-enables when xAI creds exist (mirrors HASS_TOKEN → homeassistant); its check_fn still gates the schema.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
+# OFF by default for new installs (the checklist won't pre-select them). x_search auto-enables when xAI creds
+# exist (mirrors HASS_TOKEN → homeassistant); runtime check_fns still gate schemas for service-backed toolsets.
+_DEFAULT_OFF_TOOLSETS = {
+    "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a",
+    "kanban", "kimi_webbridge",
+}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
