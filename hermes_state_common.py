@@ -152,7 +152,8 @@ _BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from'
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
-    "        AND p.end_reason = 'compression')")
+    "        AND p.end_reason = 'compression'"
+    "        AND json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NULL)")
 
 # 'session_switch' creates no child row today, but pre-marker DBs hold legacy reset children whose parent
 # ended that way.  Must stay identical to the recovery fence in find_latest_gateway_session_for_peer.

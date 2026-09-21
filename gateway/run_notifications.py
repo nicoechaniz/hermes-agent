@@ -106,8 +106,14 @@ class GatewayNotificationsMixin:
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
-    _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
-    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
+    # One admitted event cannot authorize another physical owner's payload just
+    # because both inherited the same chat route (aea0c219, 90ee7fe5).
+    _COMPLETION_BATCH_KEY_FIELDS = (
+        "parent_session_id", "session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id",
+    )
+    _ASYNC_GROUP_KEY_FIELDS = (
+        "session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[2:],
+    )
 
     @dataclasses.dataclass
     class _UpdatePaths:
@@ -206,6 +212,12 @@ class GatewayNotificationsMixin:
             tip_row = await session_db.get_session(target_session_id)
         except Exception:
             tip_row = None
+        if tip_row is not None and self._is_delegated_completion_owner(tip_row):
+            logger.warning(
+                "Dropping completion with delegated compression target %s",
+                target_session_id,
+            )
+            return None
         if tip_row is None or tip_row.get("ended_at"):
             logger.warning(
                 "Async-delegation compression continuation %s is %s; dropping injection.",
@@ -265,6 +277,20 @@ class GatewayNotificationsMixin:
             logger.warning(
                 "Async-delegation completion has unknown spawning session %s; "
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
+            )
+            return None
+        if (
+            self._is_delegated_completion_owner(pinned_row)
+            and pinned_session_id != session_entry.session_id
+            and (
+                not pinned_row.get("ended_at")
+                or pinned_row.get("end_reason") != "compression"
+            )
+        ):
+            logger.warning(
+                "Dropping completion pin for delegated owner %s; a worker "
+                "cannot acquire the foreground route via notification.",
+                pinned_session_id,
             )
             return None
         target_session_id = pinned_session_id
@@ -1366,11 +1392,31 @@ class GatewayNotificationsMixin:
                 self._completion_deliveries_inflight.add(identity)
             return seen
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
-        """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
-        session live or compression-rotated with a live continuation; the resolver still retargets),
-        ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
-        rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim)."""
+    @staticmethod
+    def _is_delegated_completion_owner(row: dict) -> bool:
+        """Whether durable worker provenance makes a row ineligible to claim a route.
+
+        Peer refresh can replace ``source`` with a transport value while the
+        delegation marker survives worker compression.  A bare parent link is
+        deliberately not a worker marker: normal compression also has one.
+        """
+        if row.get("source") == "subagent":
+            return True
+        config = row.get("model_config") or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (TypeError, ValueError):
+                return False
+        return isinstance(config, dict) and bool(config.get("_delegate_from"))
+
+    async def _classify_completion_target(self, parent_session_id: str, session_key: str = "") -> str:
+        """Classify completion ownership before adapter acceptance.
+
+        ``"terminal"`` includes unknown/user-closed owners and delegated
+        workers not already bound to this event's foreground route.  Their
+        stored output and delegation records remain queryable.
+        """
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
@@ -1382,24 +1428,85 @@ class GatewayNotificationsMixin:
             return "retry"
         if parent is None:
             return "terminal"
+        foreground = None
+        delegated_owner = self._is_delegated_completion_owner(parent)
+        if delegated_owner:
+            # A manual /resume can bind a historical worker to a foreground
+            # route.  A compressed continuation is checked below against the
+            # whole owned lineage; inherited peer fields never authorize a
+            # switch to an unrelated foreground.
+            try:
+                foreground = (
+                    await self.async_session_store.lookup_by_session_key(session_key)
+                    if session_key else None
+                )
+            except Exception:
+                logger.debug("Completion foreground lookup failed", exc_info=True)
+                return "retry"
+            if foreground is None or (
+                not parent.get("ended_at") and foreground.session_id != parent_session_id
+            ):
+                logger.warning(
+                    "Suppressing gateway notification for delegated owner %s; "
+                    "inherited transport is not foreground authority. No forwarding; "
+                    "process output/delegation records remain available.",
+                    parent_session_id,
+                )
+                return "terminal"
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
         if end_reason != "compression":
             # Only a USER-closed session (/new, user_exit, session_switch) is unreachable; idle/timeout
             # ends stay routable and the resolver retargets. Boundary set shared with the resolver.
+            if delegated_owner and (foreground is None or foreground.session_id != parent_session_id):
+                return "terminal"
             return "terminal" if end_reason in _USER_BOUNDARY_END_REASONS else "deliver"
         try:
             tip_session_id = await session_db.get_compression_tip(parent_session_id)
             if not tip_session_id or tip_session_id == parent_session_id:
                 # Rotation mid-flight: continuation not visible yet. Retry, don't drop.
-                return "retry"
+                # A delegated worker with no eligible continuation cannot
+                # become a foreground route later in this delivery attempt.
+                return "terminal" if delegated_owner else "retry"
             tip = await session_db.get_session(tip_session_id)
         except Exception:
             logger.debug("Async-completion pre-flight tip lookup failed for %s", parent_session_id, exc_info=True)
             return "retry"
+        if tip is not None and self._is_delegated_completion_owner(tip):
+            logger.warning(
+                "Suppressing gateway notification with delegated compression target %s",
+                tip_session_id,
+            )
+            return "terminal"
         if tip is None or tip.get("ended_at"):
             return "retry"
+        if session_key:
+            try:
+                foreground = foreground or await self.async_session_store.lookup_by_session_key(session_key)
+                if foreground is None:
+                    return "retry"
+                owns_lineage = foreground.session_id in {parent_session_id, tip_session_id}
+                if not owns_lineage:
+                    foreground_row = await session_db.get_session(foreground.session_id)
+                    if (
+                        foreground_row is not None
+                        and foreground_row.get("ended_at")
+                        and foreground_row.get("end_reason") == "compression"
+                    ):
+                        owns_lineage = (
+                            await session_db.get_compression_tip(foreground.session_id)
+                        ) == tip_session_id
+            except Exception:
+                logger.debug("Completion foreground lineage lookup failed", exc_info=True)
+                return "retry"
+            if not owns_lineage:
+                logger.warning(
+                    "Suppressing completion for compression lineage %s -> %s; "
+                    "current route %s is unrelated.",
+                    parent_session_id, tip_session_id, foreground.session_id,
+                )
+                return "terminal"
         return "deliver"
 
     @staticmethod
@@ -1418,7 +1525,9 @@ class GatewayNotificationsMixin:
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
-            verdict = await self._classify_completion_target(parent_session_id)
+            verdict = await self._classify_completion_target(
+                parent_session_id, str(evt.get("session_key") or ""),
+            )
             if verdict != "deliver":
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
@@ -1481,11 +1590,13 @@ class GatewayNotificationsMixin:
         # can still fail closed inside the message pipeline AFTER the adapter accepted, which would falsely
         # acknowledge the durable row as delivered. Verify the target here, before acceptance, and give
         # drops an honest durable disposition.
-        verdict = await self._classify_completion_target(parent_session_id)
+        verdict = await self._classify_completion_target(
+            parent_session_id, str(evt.get("session_key") or ""),
+        )
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(
-                    "Async delegation %s targets permanently-gone session %s; "
+                    "Async delegation %s targets ineligible gateway session %s; "
                     "terminally dropping delivery (result remains in the delegation records).",
                     claim.delegation_id or "<legacy>", parent_session_id,
                 )
@@ -1494,8 +1605,8 @@ class GatewayNotificationsMixin:
             else:
                 logger.warning(
                     "Background process %s completion targets "
-                    "permanently-gone session %s (user boundary such as "
-                    "/new); dropping notification (output remains available via process(action='log')).",
+                    "ineligible gateway session %s (closed boundary or non-foreground delegated "
+                    "owner); dropping notification (output remains available via process(action='log')).",
                     evt.get("session_id") or "<unknown>", parent_session_id,
                 )
             claim.proceed = False
