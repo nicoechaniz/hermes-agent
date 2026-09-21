@@ -165,6 +165,10 @@ TOOLSETS = {
         ["spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
          "spotify_playlists", "spotify_albums", "spotify_library"],
     ),
+    "altermundi": _ts(
+        "Read-only access to AlterMundi collective memory over anyVPN",
+        ["altermundi_search", "altermundi_doc"],
+    ),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
