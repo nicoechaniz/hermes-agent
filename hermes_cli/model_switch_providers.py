@@ -807,7 +807,17 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
         # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
         # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
-        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
+        has_creds = _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)
+        if not has_creds and hermes_id == "kimi-coding":
+            # ``kimi login`` is an external credential store, not a Hermes API-key env var.
+            # Status is deliberately read-only: opening a picker must not rotate an OAuth chain.
+            try:
+                from hermes_cli.auth import get_auth_status
+                status = get_auth_status("kimi-coding") or {}
+                has_creds = bool(status.get("configured") or status.get("logged_in"))
+            except Exception:
+                logger.debug("Kimi CLI credential discovery failed", exc_info=True)
+        if not has_creds:
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated, non_blocking=b.non_blocking_catalogs)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -937,6 +947,13 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        if not has_creds and cp.slug == "kimi-coding":
+            try:
+                from hermes_cli.auth import get_auth_status
+                status = get_auth_status("kimi-coding") or {}
+                has_creds = bool(status.get("configured") or status.get("logged_in"))
+            except Exception:
+                logger.debug("Kimi CLI credential discovery failed", exc_info=True)
         if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
             # Subprocess-backed providers own their auth; the binary resolving is the credential
             # evidence for listing (same gate as the copilot-acp overlay row and hermes auth status).

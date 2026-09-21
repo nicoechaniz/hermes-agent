@@ -381,7 +381,7 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
 def _refresh_credentials_after_401(
     agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
 ) -> bool:
-    """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, copilot,
+    """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, Kimi, copilot,
     anthropic), printing user-facing diagnostics when the nous/anthropic refresh fails.
     Returns True when a refresh succeeded and the call should be retried."""
     from agent.conversation_loop import _is_copilot_provider
@@ -413,6 +413,15 @@ def _refresh_credentials_after_401(
             agent._buffer_vprint("🔐 Nous agent key refreshed after 401. Retrying request...")
             return True
         _print_nous_401_diagnostics(agent, api_error)
+    if (
+        agent.provider == "kimi-coding"
+        and getattr(agent, "_is_kimi_cli_oauth", False)
+        and not getattr(_retry, "kimi_cli_auth_retry_attempted", False)
+    ):
+        _retry.kimi_cli_auth_retry_attempted = True
+        if agent._try_refresh_kimi_cli_client_credentials():
+            agent._buffer_vprint("🔐 Kimi CLI OAuth refreshed after 401. Retrying request...")
+            return True
     if _is_copilot_provider(agent) and not _retry.copilot_auth_retry_attempted:
         _retry.copilot_auth_retry_attempted = True
         if agent._try_refresh_copilot_client_credentials():

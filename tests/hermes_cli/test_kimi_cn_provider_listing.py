@@ -26,8 +26,10 @@ from hermes_cli.providers import resolve_provider_full
 
 
 @patch.dict(os.environ, {"KIMI_CN_API_KEY": "sk-cn-fake"}, clear=False)
-def test_kimi_cn_appears_when_only_cn_key_set():
+def test_kimi_cn_appears_when_only_cn_key_set(monkeypatch, tmp_path):
     """kimi-coding-cn should appear when only KIMI_CN_API_KEY is set."""
+    # This covers the CN API-key lane, not a separately installed Kimi Code CLI.
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "no-kimi-cli-store"))
     providers = list_authenticated_providers(current_provider="kimi-coding-cn")
 
     # kimi-coding-cn must be listed (it has credentials)
@@ -73,5 +75,4 @@ def test_resolve_provider_full_preserves_kimi_cn_provider_identity():
     assert pdef.id == "kimi-coding-cn"
     assert pdef.base_url == "https://api.moonshot.cn/v1"
     assert pdef.api_key_env_vars == ("KIMI_CN_API_KEY",)
-
 

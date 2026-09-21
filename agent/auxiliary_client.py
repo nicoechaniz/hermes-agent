@@ -1903,7 +1903,8 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
 
 
 def _maybe_wrap_anthropic(
-    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
+    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None,
+    *, kimi_cli_oauth: bool = False,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic Messages.
 
@@ -1933,7 +1934,8 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        client_kwargs = {"kimi_cli_oauth": True} if kimi_cli_oauth else {}
+        real_client = build_anthropic_client(api_key, base_url, **client_kwargs)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -2160,6 +2162,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         pool_present, entry = _select_pool_entry(provider_id)
+        kimi_cli_oauth = False
         if pool_present:
             api_key = _pool_runtime_api_key(entry)
             if not api_key:
@@ -2172,6 +2175,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
             raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+            kimi_cli_oauth = bool(creds.get("kimi_cli_oauth"))
             via = ""
         # The session's own endpoint wins for its provider: the key was issued for that gateway, and
         # sending it to the registry default 401s, then quarantines the provider the main model is on.
@@ -2180,6 +2184,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             raw_base_url = runtime["base_url"].rstrip("/")
             if isinstance(runtime.get("api_key"), str) and runtime["api_key"]:
                 api_key = runtime["api_key"]
+                kimi_cli_oauth = bool(runtime.get("source") in {"kimi-cli-oauth", "kimi-cli-oauth-refresh"})
             via = " (session endpoint)"
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
         # Native Gemini, else OpenAI-wire + Anthropic rewrap.
@@ -2202,7 +2207,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if merged:
             extra["default_headers"] = merged
         client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-        return _maybe_wrap_anthropic(client, model, api_key, raw_base_url), model
+        return _maybe_wrap_anthropic(
+            client, model, api_key, raw_base_url, kimi_cli_oauth=kimi_cli_oauth,
+        ), model
     return None, None
 
 
@@ -4826,7 +4833,7 @@ def _is_actual_auxiliary_route(req: _ResolveRequest, base_url: str) -> bool:
 
 
 def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
-                    base_url_str: str = "", api_key_str: str = ""):
+                    base_url_str: str = "", api_key_str: str = "", *, kimi_cli_oauth: bool = False):
     """Wrap a plain OpenAI client in the right transport adapter; specialized wrappers pass through.
     Codex (Responses API): explicit ``api_mode=codex_responses``, else — with no
     explicit api_mode — api.openai.com + codex model. Anthropic (Messages): ``api_mode=anthropic_messages``,
@@ -4863,7 +4870,10 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+    return _maybe_wrap_anthropic(
+        client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+        kimi_cli_oauth=kimi_cli_oauth,
+    )
 
 
 def _profile_declared_messages_wire(provider: str) -> Optional[str]:
@@ -5182,7 +5192,8 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     api_key = str(creds.get("api_key", "")).strip()
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
-    api_key = _normalize_api_key(req.explicit_api_key) or api_key
+    explicit_api_key = _normalize_api_key(req.explicit_api_key)
+    api_key = explicit_api_key or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
@@ -5228,7 +5239,10 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
                 client = CodexAuxiliaryClient(client, final_model)
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
-    client = _wrap_transport(req, client, final_model, raw_base_url, api_key)
+    client = _wrap_transport(
+        req, client, final_model, raw_base_url, api_key,
+        kimi_cli_oauth=bool(not explicit_api_key and creds.get("kimi_cli_oauth")),
+    )
     logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
     return _route_client(req, client, final_model)
 
