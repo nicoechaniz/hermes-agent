@@ -607,7 +607,6 @@ class TestBrowserRetrievalHints:
 def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):
     """#111105: a same-size config.yaml swapped in with the old mtime must change the memo key."""
     import os
-    import shutil
 
     from model_tools import _tool_defs_cache_key
 
@@ -618,6 +617,7 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         st = cfg.stat()
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
-        shutil.copy2(other, cfg)
+        os.replace(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert cfg.stat().st_ino != st.st_ino
         assert _tool_defs_cache_key(None, None, False) != before
