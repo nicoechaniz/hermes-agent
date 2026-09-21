@@ -639,6 +639,7 @@ class SessionCompressionMixin:
                       WHERE p.id = sessions.parent_session_id
                         AND p.end_reason = 'compression'
                         AND p.ended_at IS NOT NULL
+                        AND json_extract(COALESCE(sessions.model_config, '{}'), '$._reset_from') IS NULL
                   )
                   AND EXISTS (
                       SELECT 1 FROM messages m
@@ -687,8 +688,11 @@ class SessionCompressionMixin:
     def get_compression_lineage(self, session_id: str) -> List[str]:
         """Return compression ancestors through tip in chronological order."""
         session = self.get_session(session_id)
-        if not session or self._is_explicit_fork_child_row(session):
-            return [session_id] if session else []
+        if not session:
+            return []
+
+        # A fork/reset is a root of its own compression chain. Per-edge
+        # checks fence its old parent without hiding later continuations.
         root = session
         ancestors = {root["id"]}
         while self._is_compression_child_row(root):

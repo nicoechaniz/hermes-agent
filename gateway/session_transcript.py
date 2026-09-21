@@ -5,6 +5,7 @@ bound onto ``SessionStore`` via the MRO."""
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import threading
 import time
@@ -57,6 +58,29 @@ class SessionTranscriptMixin:
     # no longer a transient blip and needs operator attention.
     _TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 3
 
+    @staticmethod
+    def _is_delegated_continuation_row(row: Optional[Dict[str, Any]]) -> bool:
+        """Whether a durable continuation belongs to a delegated worker.
+
+        Automatic route healing follows compression tips after restart or a
+        delayed internal event.  A worker inherits its parent's transport
+        fields, so that recovery must not adopt it merely because its source
+        row looks like a valid continuation.  Keep the historical
+        source-only marker as a fence for pre-marker databases; newer rows
+        retain ``_delegate_from`` even after peer metadata refresh.
+        """
+        if not isinstance(row, dict):
+            return False
+        if row.get("source") == "subagent":
+            return True
+        config = row.get("model_config") or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (TypeError, ValueError):
+                return False
+        return isinstance(config, dict) and bool(config.get("_delegate_from"))
+
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Latest compression continuation for *session_id* (heals a mapping left pointing at a
         compressed parent by a restart or failed send)."""
@@ -64,10 +88,29 @@ class SessionTranscriptMixin:
         if db is None:
             return session_id
         try:
-            return db.get_compression_tip(session_id) or session_id
+            tip = db.get_compression_tip(session_id) or session_id
+            if tip != session_id and self._is_delegated_continuation_row(db.get_session(tip)):
+                logger.warning(
+                    "Refusing automatic compression-route adoption from %s to delegated worker %s",
+                    session_id, tip,
+                )
+                return session_id
+            return tip
         except Exception:
             logger.debug("Compression-tip lookup failed for session %s", session_id, exc_info=True)
             return session_id
+
+    def _has_delegated_compression_tip(self, session_id: Optional[str]) -> bool:
+        """Whether an ended route's raw tip is a worker that must not be adopted."""
+        db = self._db_for_session_id(session_id) if session_id else None
+        if db is None:
+            return False
+        try:
+            tip = db.get_compression_tip(session_id)
+            return bool(tip and tip != session_id and self._is_delegated_continuation_row(db.get_session(tip)))
+        except Exception:
+            logger.debug("Delegated compression-tip lookup failed for session %s", session_id, exc_info=True)
+            return False
 
     def _heal_compression_tip_locked(
         self, entry: "SessionEntry", original_session_id: Optional[str],

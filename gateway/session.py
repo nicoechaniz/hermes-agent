@@ -719,6 +719,7 @@ class _RouteChecks:
     canonical_id: Optional[str]  # compression tip (may equal session_id)
     is_stale: bool  # row already ended in state.db
     reset_reason: Optional[str]
+    delegated_tip: bool = False  # never let an internal wake turn this worker into a fresh route
 
 
 @dataclass
@@ -927,6 +928,7 @@ class SessionStore(
             checks = _RouteChecks(
                 sid, self._compression_tip_for_session_id(sid), self._is_session_ended_in_db(sid),
                 self._route_reset_reason(observed),
+                not touch_activity and self._has_delegated_compression_tip(sid),
             )
         # Phase 2 (lock): apply the decisions to _entries.
         decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
@@ -975,6 +977,14 @@ class SessionStore(
             checked = entry.session_id == snapshot_sid
             stale_hit = checked and checks.is_stale
             reset_reason = checks.reset_reason if checked else None
+            if stale_hit and checks.delegated_tip:
+                # A delayed internal completion has no authority to convert a
+                # parent whose only "continuation" is a worker into a fresh
+                # foreground conversation.  Leave the mapping for the
+                # completion resolver to reject; a later human message takes
+                # the normal reset/recovery path.
+                decision.entry = entry
+                return decision
             if stale_hit:
                 # Stale routing self-heal: drop the entry and fall through to recovery (reopens
                 # agent_close / ws_orphan_reap rows, fresh session for other end_reasons).
