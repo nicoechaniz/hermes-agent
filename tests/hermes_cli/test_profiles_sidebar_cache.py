@@ -190,11 +190,14 @@ class SidebarCacheTests(unittest.TestCase):
             self.assertTrue(release.wait(timeout=2))
             return None
 
+        scan = profiles._sidebar_singleflight_cache(
+            profiles.get_profiles_projects_tree.__wrapped__
+        )
         with mock.patch.object(profiles, "_profile_targets", return_value=[("default", Path("/nonexistent"))]), \
                 mock.patch.object(profiles, "_read_profile_db", side_effect=fake_read), \
                 ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(profiles.get_profiles_projects_tree) for _ in range(workers)]
-            self.assertTrue(entered.wait(timeout=1))
+            futures = [pool.submit(scan) for _ in range(workers)]
+            self.assertTrue(entered.wait(timeout=2))
             time.sleep(0.05)
             release.set()
             results = [future.result(timeout=2) for future in futures]
