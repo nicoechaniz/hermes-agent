@@ -791,6 +791,23 @@ class GatewayBusySessionMixin:
             return True
         event._bot_loop_admitted = True
 
+        # Plugin commands are terminal control traffic, not follow-up user
+        # input.  The base adapter cannot include dynamically discovered
+        # plugin commands in its static bypass registry, so consume them here
+        # before queue/steer/interrupt handling.  Reuse the normal inbound
+        # command sink so authorization, slash access, provenance, async
+        # handlers, and error containment stay identical to the idle path.
+        from gateway.run_inbound import is_plugin_slash_command
+        if is_plugin_slash_command(event):
+            try:
+                response = await self._handle_message(event)
+                adapter = self._delivery_adapter_for(event.source)
+                if adapter and response:
+                    await self._send_busy_reply(event, adapter, response, plain_anchor=True)
+            except Exception:
+                logger.warning("Busy plugin command failed", exc_info=True)
+            return True  # Never fall through to agent input, including send failures.
+
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
