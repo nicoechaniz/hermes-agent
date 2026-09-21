@@ -363,6 +363,14 @@ class CLIInitMixin:
         # --delete. Ported from google-gemini/gemini-cli#19332.
         self._pending_relaunch: list[str] | None = None
         self._last_ctrl_c_time = 0
+        ctrl_c_priority = CLI_CONFIG.get("display", {}).get(
+            "ctrl_c_priority", "interrupt_agent"
+        )
+        self.ctrl_c_priority = (
+            "clear_input"
+            if str(ctrl_c_priority).strip().lower() == "clear_input"
+            else "interrupt_agent"
+        )
         # Blocking-prompt overlays (clarify / sudo / approval / slash-confirm / model picker).
         self._clarify_state = self._clarify_multi_base = None
         self._clarify_freetext = False

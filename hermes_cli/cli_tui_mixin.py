@@ -1022,6 +1022,17 @@ class CLITuiMixin:
         if overlay_cleared and not (self._agent_running and self.agent):
             return
         if self._agent_running and self.agent:
+            # Optional shell-like priority: preserve the running turn and clear
+            # a draft/attachments on the first Ctrl+C. With an empty composer,
+            # Ctrl+C retains the default interrupt-then-force-exit behavior.
+            if (
+                getattr(self, "ctrl_c_priority", "interrupt_agent") == "clear_input"
+                and (event.app.current_buffer.text or self._attached_images)
+            ):
+                event.app.current_buffer.reset()
+                self._attached_images.clear()
+                event.app.invalidate()
+                return
             if now - self._last_ctrl_c_time < 2.0:
                 print("\n⚡ Force exiting...")
                 self._should_exit = True
