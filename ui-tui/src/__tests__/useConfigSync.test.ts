@@ -75,6 +75,24 @@ describe('applyDisplay', () => {
     expect($uiState.get().destructiveSlashConfirm).toBe(true)
   })
 
+  it('hydrates tui.history_nav_requires_empty_input and defaults it off', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {},
+          tui: { history_nav_requires_empty_input: true }
+        }
+      },
+      setBell
+    )
+    expect($uiState.get().historyNavRequiresEmptyInput).toBe(true)
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().historyNavRequiresEmptyInput).toBe(false)
+  })
+
   it('defaults destructive slash confirmation on and preserves it across config RPC failure', () => {
     const setBell = vi.fn()
 
