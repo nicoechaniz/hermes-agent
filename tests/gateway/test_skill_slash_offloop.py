@@ -22,7 +22,7 @@ def _runner(command):
     async def _canonical(event, source, qk, canonical):
         return False, None
 
-    async def _quick(event, source, cmd):
+    async def _quick(event, source, cmd, qk, plugin_origin):
         return False, None, cmd
 
     runner._hm_resolve_command = _resolve
@@ -51,11 +51,15 @@ async def test_unavailable_skill_scan_skips_known_commands_and_runs_off_loop():
 
     with patch.object(gateway_run, "_check_unavailable_skill", _slow_scan):
         # A registered gateway command returns before any filesystem walk.
-        handled, reply = await _runner("steer")._hm_dispatch_idle_commands(event, source, "qk")
+        handled, reply = await _runner("steer")._hm_dispatch_idle_commands(
+            event, source, "qk", None
+        )
         assert (handled, reply, scanned) == (False, None, [])
 
         # An unknown command still consults the hint, but the scan runs off the loop.
-        task = asyncio.create_task(_runner("no-such-skill")._hm_dispatch_idle_commands(event, source, "qk"))
+        task = asyncio.create_task(
+            _runner("no-such-skill")._hm_dispatch_idle_commands(event, source, "qk", None)
+        )
         await asyncio.to_thread(scan_started.wait, 1)
         loop_ticked.set()  # only reachable mid-scan when the loop is free
         handled, reply = await task
