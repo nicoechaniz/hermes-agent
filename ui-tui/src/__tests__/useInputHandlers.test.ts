@@ -10,8 +10,8 @@ import {
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldDetachEditedHistoryInput,
-  shouldNavigateComposerHistory,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  shouldNavigateComposerHistory
 } from '../app/useInputHandlers.js'
 
 const baseKey = {
