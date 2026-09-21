@@ -427,6 +427,22 @@ _SPECS = [
              help="Delete task_events older than N days for terminal tasks (default: 30)"),
         _arg("--log-retention-days", type=int, default=30, help="Delete worker log files older than N days (default: 30)"),
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
+    _cmd("review", children=("review_action", [
+        _cmd("create", [
+            _arg("title", help="Human title for the review"),
+            _arg("--base", required=True, help="Git base ref"),
+            _arg("--head", required=True, help="Git head ref"),
+            _arg("--repo", "--repo-path", dest="repo_path", default=".",
+                 help="Path to repository (default: cwd)"),
+            _arg("--assignee", help="Profile to assign"),
+            _arg("--ready", action="store_true",
+                 help="Create cards in 'ready' instead of 'triage'"),
+            _arg("--skill", action="append", default=[],
+                 help="Skill to attach (repeatable)"),
+            _arg("--body", help="Extra context appended to parent body"),
+            _json_flag(help="Emit JSON output"),
+        ], help="Build a durable 5-card review graph (parent + 3 reviewers + synthesis)"),
+    ]), help="Create a ship-review graph for a git change"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
          description=(
