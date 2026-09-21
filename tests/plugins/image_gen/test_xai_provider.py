@@ -438,7 +438,7 @@ class TestGenerate:
         mock_post.assert_not_called()
 
 
-    def test_storage_options_are_sent_by_default(self):
+    def test_storage_options_are_omitted_by_default(self):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         mock_resp = MagicMock()
@@ -452,9 +452,25 @@ class TestGenerate:
             provider.generate(prompt="test")
 
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        assert payload["storage_options"]["public_url"] is True
-        assert "expires_after" not in payload["storage_options"]
-        assert payload["storage_options"]["filename"].endswith(".png")
+        assert "storage_options" not in payload
+
+    def test_storage_options_are_sent_when_explicitly_enabled(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+        storage = {"public_url": True, "filename": "hermes-image.png"}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.build_xai_storage_options", return_value=storage), \
+             patch("plugins.image_gen._common.save_b64_image", return_value="/tmp/test.png"):
+            provider = XAIImageGenProvider()
+            provider.generate(prompt="test")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["storage_options"] == storage
 
     def test_public_url_file_output_wins_over_temporary_url(self):
         from plugins.image_gen.xai import XAIImageGenProvider
