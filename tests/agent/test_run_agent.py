@@ -6174,7 +6174,10 @@ class TestAnthropicCredentialRefresh:
 
         old_client.close.assert_called_once()
         rebuild.assert_called_once_with(
-            "sk-ant-oat01-fresh-token", "https://api.anthropic.com", timeout=None,
+            agent._anthropic_api_key,
+            "https://api.anthropic.com",
+            timeout=None,
+            kimi_cli_oauth=False,
         )
         assert agent._anthropic_client is new_client
         assert agent._anthropic_api_key == "sk-ant-oat01-fresh-token"
