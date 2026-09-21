@@ -59,7 +59,12 @@ def snapshot_plugin_command_origin(event: MessageEvent, adapter: Any, adapter_pr
 
     platform = scalar(getattr(getattr(source, "platform", None), "value", None)) or ""
     raw = getattr(event, "raw_message", None)
-    metadata = event.metadata if isinstance(event.metadata, dict) else {}
+    event_metadata = getattr(event, "metadata", None)
+    metadata = event_metadata if isinstance(event_metadata, dict) else {}
+    event_message_id = getattr(event, "message_id", None)
+    event_platform_update_id: Any = getattr(event, "platform_update_id", None)
+    event_text = getattr(event, "text", "")
+    event_user_id = getattr(event, "user_id", None)
     origin = "gateway"
     if getattr(source, "delivered_via_upstream_relay", False) is True:
         origin = "relay"
@@ -86,19 +91,19 @@ def snapshot_plugin_command_origin(event: MessageEvent, adapter: Any, adapter_pr
     )}
     values.update(
         platform=platform,
-        message_id=scalar(getattr(source, "message_id", None)) or scalar(event.message_id),
+        message_id=scalar(getattr(source, "message_id", None)) or scalar(event_message_id),
         account_id=account_id,
         adapter_id=(f"{type(adapter).__module__}.{type(adapter).__qualname__}" if adapter is not None else None),
         adapter_profile=scalar(adapter_profile),
-        platform_update_id=(event.platform_update_id if type(event.platform_update_id) is int else None),
-        original_text=scalar(event.text),
+        platform_update_id=(event_platform_update_id if type(event_platform_update_id) is int else None),
+        original_text=scalar(event_text),
         origin_kind=origin,
         is_bot=getattr(source, "is_bot", False) is True,
     )
     return (
         plugin_command_source_identity(source),
-        bool(event.internal),
-        (event.user_id, event.message_id, event.platform_update_id),
+        bool(getattr(event, "internal", False)),
+        (event_user_id, event_message_id, event_platform_update_id),
         values,
         adapter,
         adapter_profile,

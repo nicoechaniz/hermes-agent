@@ -82,7 +82,6 @@ git merge --no-ff feat/daemoncraft
 git merge --no-ff feat/kanban-review
 git merge --no-ff feat/altermundi-cli
 git merge --no-ff feat/altermundi-tui
-git merge --no-ff feat/hmk-native-memory-retirement
 ```
 
 Run tests before pushing. Use the wrapper, never raw `pytest`:
