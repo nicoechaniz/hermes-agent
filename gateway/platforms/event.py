@@ -80,6 +80,9 @@ class MessageEvent:
     # History-backfilled channel context (missed under require_mention); kept out of ``text`` so
     # run.py's sender-prefix logic sees only the trigger message.
     channel_context: Optional[str] = None
+    # A provider-request override attached to this inbound event. Gateway turn
+    # assembly consumes it; run_conversation deliberately does not accept it.
+    tool_choice: Any = None
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.

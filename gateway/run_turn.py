@@ -2176,6 +2176,7 @@ class GatewayTurnMixin:
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
+                tool_choice=event.tool_choice,
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
@@ -3777,7 +3778,7 @@ class GatewayTurnMixin:
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
-        next_message_id = next_channel_prompt = next_message_type = None
+        next_message_id = next_channel_prompt = next_message_type = next_tool_choice = None
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
@@ -3814,6 +3815,7 @@ class GatewayTurnMixin:
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_tool_choice = getattr(pending_event, "tool_choice", None)
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3858,7 +3860,7 @@ class GatewayTurnMixin:
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
+                channel_prompt=next_channel_prompt, message_type=next_message_type, tool_choice=next_tool_choice,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
@@ -4180,7 +4182,7 @@ class GatewayTurnMixin:
         source: SessionSource, session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
-        channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
+        channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None, tool_choice: Any = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
@@ -4216,7 +4218,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
-            channel_prompt=channel_prompt, moa_config=moa_config,
+            channel_prompt=channel_prompt, moa_config=moa_config, tool_choice=tool_choice,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,

@@ -130,6 +130,14 @@ TOOLSETS = {
     "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
+    "embodiment": _ts(
+        "Minecraft embodiment planning, perception, and safe action macros",
+        ["embodied_plan", "mc_bit", "mc_navigate"],
+    ),
+    # The detailed DaemonCraft protocol registers its direct body tools here;
+    # registry merging keeps this list authoritative without snapshotting every
+    # Minecraft action name in the core toolset file.
+    "minecraft": _ts("Direct DaemonCraft Minecraft body protocol tools"),
 
     # GUI-renderer affordances, enabled per desktop-sourced SESSION by the GUI
     # gateway (tui_gateway/server.py::_load_enabled_toolsets) — never by a
@@ -229,6 +237,11 @@ TOOLSETS = {
         "module": "tools.yuanbao_tools",
         "includes": [],
     },
+    "hermes-daemoncraft": _ts(
+        "DaemonCraft Minecraft bot toolset",
+        _HERMES_CORE_TOOLS,
+        includes=["minecraft", "embodiment"],
+    ),
     "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
     "hermes-webhook": _ts("Webhook toolset - receive and process external webhook events", _HERMES_WEBHOOK_SAFE_TOOLS),
     "hermes-gateway": _ts(
@@ -239,7 +252,7 @@ TOOLSETS = {
             "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
             "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
-            "hermes-qqbot", "hermes-webhook", "hermes-yuanbao",
+            "hermes-qqbot", "hermes-webhook", "hermes-yuanbao", "hermes-daemoncraft",
         ],
     ),
 }

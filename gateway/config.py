@@ -216,6 +216,7 @@ class Platform(Enum):
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+    DAEMONCRAFT = "daemoncraft"
 
     @classmethod
     def _missing_(cls, value):
@@ -566,6 +567,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.YUANBAO: _needs_extra("app_id", "app_secret"),
     # Relay dials OUT: "connected" once an endpoint URL is configured. EXPERIMENTAL.
     Platform.RELAY: lambda cfg: bool(cfg.extra.get("relay_url") or cfg.extra.get("url")),
+    Platform.DAEMONCRAFT: _needs_extra("bot_api_url", "bot_username"),
 }
 
 
