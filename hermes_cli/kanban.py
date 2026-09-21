@@ -21,6 +21,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
+from hermes_cli import kanban_review as kr
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
@@ -217,7 +218,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
-    "gc",
+    "gc", "review",
 })
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
@@ -1323,6 +1324,44 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_review(args: argparse.Namespace) -> int:
+    """Dispatch ``hermes kanban review <action>``."""
+    if getattr(args, "review_action", None) != "create":
+        return _err(
+            "kanban review: unknown action. Use `hermes kanban review create --help`",
+            2,
+        )
+
+    repo = Path(args.repo_path)
+    if not repo.is_dir():
+        return _err(f"kanban review: {args.repo_path} is not a directory")
+
+    result = kr.create_review_graph(
+        title=args.title,
+        base=args.base,
+        head=args.head,
+        repo_path=str(repo.resolve()),
+        assignee=args.assignee,
+        ready=args.ready,
+        skills=args.skill or [],
+        body=args.body,
+    )
+    if args.json:
+        _print_json(result)
+        return 0
+
+    if result["created"]:
+        print("Created review graph")
+    else:
+        print("Found existing review graph")
+        print("all cards already existed")
+    print(f"parent:    {result['parent_id']}")
+    for idx, reviewer_id in enumerate(result["reviewer_ids"], 1):
+        print(f"reviewer {idx}: {reviewer_id}")
+    print(f"synthesis: {result['synthesis_id']}")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1342,7 +1381,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
-    "gc": _cmd_gc,
+    "gc": _cmd_gc, "review": _cmd_review,
 }
 
 
