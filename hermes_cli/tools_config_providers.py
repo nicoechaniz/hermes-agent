@@ -607,17 +607,17 @@ def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
     _print_warning(
         "  xAI Imagine can store generated media and create reusable public URLs. "
         "xAI may bill for stored files and public URL hosting.")
-    choices = ["Enable public URLs without automatic expiry (recommended)", "Disable stored public URLs",
-               "Enable public URLs for 2 days"]
+    choices = ["Disable stored public URLs (recommended)", "Enable public URLs for 2 days",
+               "Enable public URLs without automatic expiry"]
     idx = _prompt_choice("  Stored public URLs:", choices, default=0)
-    if idx == 1:
+    if idx == 0:
         storage_cfg["enabled"] = False
         _print_success("  xAI stored public URLs disabled")
         return
     storage_cfg["enabled"] = True
     storage_cfg["public_url"] = True
-    storage_cfg["expires_after"] = 2 * 24 * 60 * 60 if idx == 2 else None
-    _print_success("  xAI stored public URLs enabled for 2 days" if idx == 2
+    storage_cfg["expires_after"] = 2 * 24 * 60 * 60 if idx == 1 else None
+    _print_success("  xAI stored public URLs enabled for 2 days" if idx == 1
                    else "  xAI stored public URLs enabled without automatic expiry")
 
 

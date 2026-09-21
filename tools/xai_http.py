@@ -94,7 +94,7 @@ def _coerce_expires_after(value: Any) -> Optional[int]:
 
 def read_xai_imagine_storage_config(section_name: str) -> Dict[str, Any]:
     """Read ``<section_name>.xai.storage`` (``image_gen``/``video_gen``) -> {enabled, public_url, expires_after}.
-    On by default so xAI returns permanent public URLs, not short-lived CDN ones; null TTL = permanent."""
+    Opt-in: billing and public retention must be explicitly enabled; null TTL = permanent."""
     try:
         from hermes_cli.config import load_config
         storage = _dict_get(_dict_get(_dict_get(load_config(), section_name), "xai"), "storage")
@@ -102,7 +102,7 @@ def read_xai_imagine_storage_config(section_name: str) -> Dict[str, Any]:
         storage = None
     storage = storage if isinstance(storage, dict) else {}
     return {
-        "enabled": _coerce_bool(storage.get("enabled"), True),
+        "enabled": _coerce_bool(storage.get("enabled"), False),
         "public_url": _coerce_bool(storage.get("public_url"), True),
         "expires_after": _coerce_expires_after(storage.get("expires_after")),
     }
