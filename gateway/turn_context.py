@@ -44,6 +44,7 @@ class TurnContext:
     history: Any = None
     context_prompt: Optional[str] = None
     channel_prompt: Optional[str] = None
+    tool_choice: Any = None
     session_id: Optional[str] = None
     session_key: Optional[str] = None
     run_generation: Optional[int] = None

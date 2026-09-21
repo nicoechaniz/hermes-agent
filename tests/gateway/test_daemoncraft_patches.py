@@ -7,20 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy optional deps before importing daemoncraft
-# ---------------------------------------------------------------------------
-
-def _stub_module(name: str, **attrs):
-    if name not in sys.modules:
-        mod = types.ModuleType(name)
-        for k, v in attrs.items():
-            setattr(mod, k, v)
-        sys.modules[name] = mod
-
-_stub_module("httpx")
-_stub_module("aiohttp", WSMsgType=MagicMock(), ClientSession=MagicMock)
-
 from gateway.platforms.daemoncraft import CycleDetector  # noqa: E402
 
 
