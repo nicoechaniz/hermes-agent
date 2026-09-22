@@ -31,6 +31,7 @@ from gateway.platforms.daemoncraft_antiloop import StuckPivotTracker
 from gateway.platforms.daemoncraft_narrategate import (
     NarrateGateTracker,
 )
+from hermes_constants import get_scratch_dir
 
 # ---------------------------------------------------------------------------
 # CycleDetector — ported from daemoncraft agents/safety.py (stdlib-only)
@@ -1766,10 +1767,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         try:
             import shutil
 
-            tts_dir = "/tmp/daemoncraft-tts"
-            os.makedirs(tts_dir, exist_ok=True)
+            tts_dir = get_scratch_dir() / "daemoncraft-tts"
+            tts_dir.mkdir(parents=True, exist_ok=True)
             filename = os.path.basename(audio_path)
-            dest = os.path.join(tts_dir, filename)
+            dest = tts_dir / filename
             shutil.copy2(audio_path, dest)
 
             # Build public URL — bot API serves /tts/audio/:filename

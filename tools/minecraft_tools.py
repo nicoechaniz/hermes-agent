@@ -1882,14 +1882,22 @@ def _handle_mc_interoception(args: dict, **kwargs) -> str:
 registry.register(
     name="mc_interoception",
     toolset="minecraft",
-    schema=MC_INTEROCEPTION_SCHEMA,
+    schema={
+        "name": "mc_interoception",
+        "description": "Read body-internal health, hunger, held item, position, and runner activity.",
+        "parameters": MC_INTEROCEPTION_SCHEMA,
+    },
     handler=lambda args, **kw: _handle_mc_interoception(args, **kw),
 )
 
 registry.register(
     name="mc_no_op",
     toolset="minecraft",
-    schema=MC_NOOP_SCHEMA,
+    schema={
+        "name": "mc_no_op",
+        "description": "Take no action for a wake-up event.",
+        "parameters": MC_NOOP_SCHEMA,
+    },
     handler=lambda args, **kw: _handle_mc_noop(args, **kw),
 )
 
@@ -1974,7 +1982,11 @@ def _handle_mc_plan_decompose(args: dict, **kwargs) -> str:
 registry.register(
     name="mc_plan_decompose",
     toolset="minecraft",
-    schema=MC_PLAN_DECOMPOSE_SCHEMA,
+    schema={
+        "name": "mc_plan_decompose",
+        "description": "Decompose a multi-step embodied goal into a verified plan manifest.",
+        "parameters": MC_PLAN_DECOMPOSE_SCHEMA,
+    },
     handler=lambda args, **kw: _handle_mc_plan_decompose(args, **kw),
 )
 
@@ -2040,7 +2052,11 @@ def _handle_mc_start_quantified_intent(args: dict, **kwargs) -> str:
 registry.register(
     name="mc_start_quantified_intent",
     toolset="minecraft",
-    schema=MC_START_QUANTIFIED_INTENT_SCHEMA,
+    schema={
+        "name": "mc_start_quantified_intent",
+        "description": "Start tracking a quantified embodied intent.",
+        "parameters": MC_START_QUANTIFIED_INTENT_SCHEMA,
+    },
     handler=lambda args, **kw: _handle_mc_start_quantified_intent(args, **kw),
 )
 
@@ -2084,7 +2100,11 @@ def _handle_mc_submit_plan(args: dict, **kwargs) -> str:
 registry.register(
     name="mc_submit_plan",
     toolset="minecraft",
-    schema=MC_SUBMIT_PLAN_SCHEMA,
+    schema={
+        "name": "mc_submit_plan",
+        "description": "Submit a verified plan manifest to the embodied orchestrator.",
+        "parameters": MC_SUBMIT_PLAN_SCHEMA,
+    },
     handler=lambda args, **kw: _handle_mc_submit_plan(args, **kw),
 )
 
@@ -2204,6 +2224,10 @@ def _handle_mc_macro(args: dict, **kwargs) -> str:
 registry.register(
     name="mc_macro",
     toolset="minecraft",
-    schema=MC_MACRO_SCHEMA,
+    schema={
+        "name": "mc_macro",
+        "description": "Execute a predefined embodied staircase, spiral, or tunnel macro.",
+        "parameters": MC_MACRO_SCHEMA,
+    },
     handler=lambda args, **kw: _handle_mc_macro(args, **kw),
 )
