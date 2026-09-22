@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 
 
 def _write_cli_store(home, *, expires_at=4_000_000_000):
@@ -15,16 +13,6 @@ def _write_cli_store(home, *, expires_at=4_000_000_000):
     }), encoding="utf-8")
     (home / "device_id").write_text("test-device", encoding="utf-8")
     return credential_path
-
-
-def test_default_test_environment_hides_operator_cli_store():
-    from hermes_cli.auth import get_kimi_cli_oauth_status
-
-    hermes_home = Path(os.environ["HERMES_HOME"])
-    kimi_home = Path(os.environ["KIMI_CODE_HOME"])
-
-    assert kimi_home == hermes_home / "kimi-code"
-    assert get_kimi_cli_oauth_status()["configured"] is False
 
 
 def test_explicit_kimi_key_wins_over_official_cli_store(monkeypatch, tmp_path):

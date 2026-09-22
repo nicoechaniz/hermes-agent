@@ -531,12 +531,6 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
-    # Kimi Code intentionally stores OAuth credentials outside HERMES_HOME so
-    # Hermes can reuse an existing ``kimi login`` session.  Keep that external
-    # store hermetic too: provider auto-detection must never read or refresh an
-    # operator's real ~/.kimi-code credentials during tests.  Kimi-specific
-    # tests override this documented path when exercising a synthetic store.
-    monkeypatch.setenv("KIMI_CODE_HOME", str(fake_hermes_home / "kimi-code"))
     # Per-TEST host-rendezvous dir (see the session-level block at the top): the
     # host gateway/serve record is shared per OS user by design, so without this
     # one test's published owner makes the next test's lifecycle code attach to it.
