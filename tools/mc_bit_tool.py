@@ -107,8 +107,6 @@ registry.register(
     name="mc_bit",
     toolset="embodiment",
     schema={
-        "type": "function",
-        "function": {
             "name": "mc_bit",
             "description": (
                 "Perceive a 3D chunk of the Minecraft world as text using the mBit 'visual' format. "
@@ -152,7 +150,6 @@ registry.register(
                 },
                 "required": ["x1", "y1", "z1", "x2", "y2", "z2"],
             },
-        },
     },
     handler=_handler,
     emoji="🧊",

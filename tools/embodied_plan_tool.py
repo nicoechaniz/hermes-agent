@@ -541,7 +541,7 @@ def _check_service_available() -> bool:
 registry.register(
     name="embodied_plan",
     toolset="embodiment",
-    schema=EMBODIED_PLAN_SCHEMA,
+    schema=EMBODIED_PLAN_SCHEMA["function"],
     handler=_handler,
     check_fn=_check_service_available,
     emoji="🤖",
