@@ -1339,6 +1339,7 @@ class TestEventBridgePollE2E:
         messages written after the baseline are delivered."""
         import mcp_serve
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         db_path = tmp_path / "state.db"
         db_path.write_text("placeholder")
         session_id = "20260329_150000_history"
@@ -1373,7 +1374,8 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        bumped_mtime = bridge._state_db_mtime + 1.0
+        os.utime(db_path, (bumped_mtime, bumped_mtime))
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1385,6 +1387,7 @@ class TestEventBridgePollE2E:
         baseline default to last_seen=0.0."""
         import mcp_serve
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         db_path = tmp_path / "state.db"
         db_path.write_text("placeholder")
         index: dict = {}
@@ -1411,7 +1414,8 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        bumped_mtime = bridge._state_db_mtime + 1.0
+        os.utime(db_path, (bumped_mtime, bumped_mtime))
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]

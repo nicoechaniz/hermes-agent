@@ -1,6 +1,7 @@
 """Behavior tests for config-driven browser snapshot thresholds."""
 
 import json
+import os
 from unittest.mock import Mock
 
 import pytest
@@ -27,10 +28,13 @@ def isolated_snapshot_threshold(tmp_path, monkeypatch):
 
 
 def _write_threshold(hermes_home, value):
-    (hermes_home / "config.yaml").write_text(
+    target = hermes_home / "config.yaml"
+    staged = hermes_home / "config.yaml.tmp"
+    staged.write_text(
         f"browser:\n  snapshot_threshold: {value}\n",
         encoding="utf-8",
     )
+    os.replace(staged, target)
 
 
 def _long_snapshot(chars: int) -> str:
