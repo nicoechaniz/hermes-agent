@@ -445,10 +445,7 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(
-    api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False,
-    kimi_cli_oauth: bool = False,
-):
+def build_anthropic_client(api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
@@ -469,14 +466,7 @@ def build_anthropic_client(
     kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key
     headers = _beta_header(common_betas + _OAUTH_ONLY_BETAS if style == "oauth" else common_betas)
     if style == "kimi":
-        # The Kimi Coding plan keys are normally API keys and retain Hermes attribution.  OAuth
-        # tokens inherited from ``kimi login`` are different: Kimi binds their plan to the official
-        # CLI/device identity, which must never be applied to an unrelated explicit API key.
-        if kimi_cli_oauth:
-            from hermes_cli.auth import kimi_coding_default_headers
-            headers = {**kimi_coding_default_headers(), **headers}
-        else:
-            headers = {**_attribution_headers(), **headers}
+        headers = {**_attribution_headers(), **headers}
     elif style == "oauth":
         headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
         headers["x-app"] = "cli"

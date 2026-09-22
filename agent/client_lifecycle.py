@@ -490,10 +490,7 @@ class ClientLifecycleMixin:
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(
-            token, base_url, timeout=get_provider_request_timeout(self.provider, self.model),
-            kimi_cli_oauth=bool(getattr(self, "_is_kimi_cli_oauth", False)),
-        )
+        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
@@ -504,10 +501,7 @@ class ClientLifecycleMixin:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
-        return build_anthropic_client(
-            key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4],
-            kimi_cli_oauth=bool(getattr(self, "_is_kimi_cli_oauth", False)),
-        )
+        return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
         """Build (or reuse) a request-local Anthropic client for one in-flight call.
@@ -902,30 +896,6 @@ class ClientLifecycleMixin:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
-        return True
-
-    def _try_refresh_kimi_cli_client_credentials(self) -> bool:
-        """Refresh a CLI-owned Kimi OAuth token and rebuild its Anthropic client."""
-        if self.provider != "kimi-coding" or not getattr(self, "_is_kimi_cli_oauth", False):
-            return False
-        try:
-            # Force the one allowed 401 rung against the store which supplied this session's token.
-            from hermes_cli.auth import resolve_kimi_cli_oauth_credentials
-            base_url = str(self.base_url or "").strip().rstrip("/")
-            credentials = resolve_kimi_cli_oauth_credentials(base_url=base_url, force_refresh=True)
-            token = str(credentials.get("api_key") or "").strip()
-        except Exception as exc:
-            logger.debug("Kimi CLI OAuth forced refresh failed: %s", exc)
-            return False
-        if not _valid_credential_pair(token, base_url):
-            return False
-        self.api_key = self._anthropic_api_key = token
-        self.base_url = self._anthropic_base_url = base_url
-        try:
-            self._rebuild_anthropic_client()
-        except Exception as exc:
-            logger.warning("Failed to rebuild Kimi client after OAuth refresh: %s", exc)
-            return False
         return True
 
     # ------------------------------------------------------------------ route-derived client config

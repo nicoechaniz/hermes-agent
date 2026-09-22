@@ -33,9 +33,7 @@ from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
-    _resolve_zai_base_url, _kimi_cli_credentials_path, detect_zai_endpoint, get_kimi_cli_oauth_status,
-    kimi_cli_model_ids, kimi_coding_default_headers,
-    resolve_kimi_cli_oauth_credentials)
+    _resolve_zai_base_url, detect_zai_endpoint)
 from hermes_cli.auth_model_picker import (  # noqa: F401  re-exported
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (  # noqa: F401  re-exported
@@ -1914,10 +1912,6 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    # An explicit KIMI_API_KEY (or its existing aliases/pool entry) is authoritative.  Only when
-    # none was supplied may the read-only official CLI store make Kimi visible in the picker.
-    if provider_id == "kimi-coding" and not api_key:
-        return get_kimi_cli_oauth_status()
     env_url = _provider_env_base_url(pconfig)
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -1932,23 +1926,6 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         "configured": configured, "provider": provider_id, "name": pconfig.name,
         "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
         "base_url": base_url, "logged_in": configured}
-
-
-def should_use_kimi_cli_oauth() -> bool:
-    """Whether the read-only Kimi CLI store should own picker discovery.
-
-    Normal Hermes API-key sources remain authoritative.  This helper intentionally
-    does not resolve or refresh OAuth credentials because opening a model picker
-    must not rotate the external CLI's token chain.
-    """
-    pconfig = _registry_lookup("kimi-coding")
-    if not pconfig or pconfig.auth_type != "api_key":
-        return False
-    api_key, _source = _resolve_api_key_provider_secret("kimi-coding", pconfig)
-    if api_key:
-        return False
-    status = get_kimi_cli_oauth_status()
-    return bool(status.get("configured") or status.get("logged_in"))
 
 
 def _external_process_auth_evidence(provider_id: str, resolved_command: Optional[str]) -> tuple[bool, Optional[str]]:
@@ -2168,21 +2145,13 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
             provider=provider_id, code="invalid_provider")
 
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    env_url = _provider_env_base_url(pconfig)
-    oauth: Dict[str, Any] = {}
-    # KIMI_API_KEY remains first-class and must never be shadowed by a local CLI login.  The CLI
-    # store is intentionally read only after all normal API-key sources have been exhausted.
-    if provider_id == "kimi-coding" and not api_key and _kimi_cli_credentials_path().exists():
-        oauth = resolve_kimi_cli_oauth_credentials(base_url=env_url or KIMI_CODE_BASE_URL)
-        api_key = str(oauth.get("api_key") or "").strip()
-        key_source = str(oauth.get("source") or "kimi-cli-oauth")
-        env_url = str(oauth.get("base_url") or env_url).strip()
     # No-auth LM Studio: a placeholder so runtime / auxiliary_client see the local server as
     # configured. doctor still reports unconfigured because the status path uses the raw secret.
     if not api_key and provider_id == "lmstudio":
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
+    env_url = _provider_env_base_url(pconfig)
     resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
     base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
     # An API-key provider must never hand back an empty base URL (a set-but-empty
@@ -2193,12 +2162,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if not api_key and provider_id == "actual" and is_actual_local_base_url(base_url):
         api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
         key_source = key_source or "local-offline"
-    result = {
+    return {
         "provider": provider_id, "api_key": api_key, "base_url": base_url.rstrip("/"),
         "source": key_source or "default"}
-    if oauth:
-        result.update({key: value for key, value in oauth.items() if key in {"auth_file", "kimi_cli_oauth"}})
-    return result
 
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:

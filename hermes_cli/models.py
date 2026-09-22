@@ -1605,16 +1605,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return _ollama_local_catalog(force_refresh)
 
     normalized = normalize_provider(provider)
-    if normalized == "kimi-coding":
-        # The CLI's config is authoritative for Coding-plan aliases and works while offline, so
-        # a picker can discover a ``kimi login`` installation without a separate API key.  An
-        # explicit Hermes API key remains authoritative and must use its own live/curated catalog.
-        try:
-            from hermes_cli.auth import kimi_cli_model_ids, should_use_kimi_cli_oauth
-            if should_use_kimi_cli_oauth() and (cli_models := kimi_cli_model_ids()):
-                return cli_models
-        except Exception:
-            pass
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)

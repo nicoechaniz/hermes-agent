@@ -750,18 +750,6 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
     agent.api_key = effective_key
     agent._anthropic_api_key = effective_key
-    agent._is_kimi_cli_oauth = False
-    if agent.provider == "kimi-coding" and isinstance(effective_key, str) and effective_key:
-        # Resolve through the same authority as main/auxiliary routing.  Source, rather than the
-        # token's shape, decides whether the official CLI identity is safe to send.
-        try:
-            from hermes_cli.auth import resolve_api_key_provider_credentials
-            resolved = resolve_api_key_provider_credentials("kimi-coding")
-            agent._is_kimi_cli_oauth = bool(
-                resolved.get("kimi_cli_oauth") and resolved.get("api_key") == effective_key
-            )
-        except Exception:
-            logging.getLogger(__name__).debug("Kimi CLI OAuth source check failed", exc_info=True)
     # OAuth only for native Anthropic routes (the anthropic provider, or a custom provider whose host
     # is exactly api.anthropic.com, incl. a key_cmd callable token — #114967). Third-party
     # providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must never
@@ -769,10 +757,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # cause 401/403 on their endpoints. See #1739.
     from agent.anthropic_credentials import anthropic_route_is_oauth
     agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
-    client_kwargs = {"timeout": _provider_timeout}
-    if agent._is_kimi_cli_oauth:
-        client_kwargs["kimi_cli_oauth"] = True
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, **client_kwargs)
+    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
         _print_key_banner(effective_key, "token")

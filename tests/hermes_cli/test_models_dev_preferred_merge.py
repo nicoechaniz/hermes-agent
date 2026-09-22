@@ -64,9 +64,8 @@ class TestProviderModelIdsPreferred:
 
 
 
-    def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self, monkeypatch, tmp_path):
+    def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""
-        monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "no-kimi-cli-store"))
 
         class Response:
             def __init__(self, body: bytes):
