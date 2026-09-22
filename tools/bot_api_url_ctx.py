@@ -44,6 +44,16 @@ def get_bot_api_url() -> str:
     return os.getenv("MC_API_URL", "http://localhost:3001")
 
 
+def get_context_bot_api_url() -> Optional[str]:
+    """Return only the bot URL selected by the active gateway turn."""
+    return _bot_api_url_ctx.get()
+
+
+def has_bot_api_url_context() -> bool:
+    """Whether a gateway turn explicitly selected a DaemonCraft bot."""
+    return bool(get_context_bot_api_url())
+
+
 def set_bot_api_url(url: str) -> contextvars.Token:
     """Set the contextvar and return the token. Caller MUST `reset` it."""
     return _bot_api_url_ctx.set(url)

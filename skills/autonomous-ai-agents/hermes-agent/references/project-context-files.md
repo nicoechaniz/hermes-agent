@@ -6,7 +6,7 @@ Hermes injects project-level instructions into the system prompt by reading cont
 |---|---|---|
 | `.hermes.md` / `HERMES.md` | Walks parents up to the Git root, stops at Git root | You want Hermes-specific hierarchical project rules |
 | `AGENTS.override.md` / `AGENTS.md` / `agents.md` | Inside a Git repo, checks every directory from Git root to cwd; first filename wins per directory, deeper sections appear later and take precedence. Outside a Git repo, checks cwd only. | You want portable agent instructions shared across Hermes, Claude Code, Codex, and other agents |
-| `CLAUDE.md` / `claude.md` | Cwd only | Same project role, Claude-flavored |
+| `CLAUDE.md` / `claude.md` | Cwd only | Same as AGENTS.md, Claude-flavored |
 | `.cursorrules` / `.cursor/rules/*.mdc` | Cwd only | Migrating from Cursor |
 
 `SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.

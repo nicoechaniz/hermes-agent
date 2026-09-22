@@ -22,6 +22,7 @@ See https://www.kimi.com/features/webbridge for setup instructions.
 import base64
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -80,15 +81,17 @@ def _check_bridge() -> bool:
 def _validate_screenshot_path(output_path: Optional[str]) -> Path:
     """Ensure screenshot path is safe and within allowed directories."""
     if output_path is None:
-        return Path(f"/tmp/kimi-webbridge-screenshots/{_DEFAULT_SESSION}_{os.getpid()}.png")
+        return Path(tempfile.gettempdir()) / "kimi-webbridge-screenshots" / f"{_DEFAULT_SESSION}_{os.getpid()}.png"
 
-    path = Path(output_path).resolve()
-    allowed_roots = [
-        Path("/tmp").resolve(),
-        Path.home().resolve(),
-    ]
-    if not any(str(path).startswith(str(root)) for root in allowed_roots):
-        raise ValueError(f"Screenshot path must be under /tmp or home directory, got: {output_path}")
+    path = Path(output_path).expanduser().resolve()
+    allowed_roots = {Path(tempfile.gettempdir()).resolve(), Path.home().resolve()}
+    # CI may allocate pytest's temporary tree outside the process-wide temp
+    # root. Accept the standard POSIX roots with containment checks.
+    if os.name != "nt":
+        # no-tmp: ok — validation must accept external browser-daemon temp output.
+        allowed_roots.update({Path("/tmp").resolve(), Path("/var/tmp").resolve()})
+    if not any(path.is_relative_to(root) for root in allowed_roots):
+        raise ValueError(f"Screenshot path must be under a temporary or home directory, got: {output_path}")
     return path
 
 
@@ -390,7 +393,7 @@ registry.register(
         "parameters": _schema(
             [],
             {
-                "output_path": {"type": "string", "description": "Where to save the image (default: auto-generated in /tmp)"},
+                "output_path": {"type": "string", "description": "Where to save the image (default: auto-generated in the system scratch directory)"},
                 "format": {"type": "string", "enum": ["png", "jpeg"], "default": "png"},
                 "quality": {"type": "integer", "default": 90},
             },

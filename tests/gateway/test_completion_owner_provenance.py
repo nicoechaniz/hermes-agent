@@ -13,13 +13,44 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import AsyncSessionStore, SessionSource, SessionStore
-from hermes_state import AsyncSessionDB
+from gateway.session import SessionSource, SessionStore
 from hermes_cli import goals
 
 
-class _ResolvedBoundary(Exception):
-    pass
+def test_completion_grouping_fields_are_unique_and_owner_scoped():
+    completion_fields = GatewayRunner._COMPLETION_BATCH_KEY_FIELDS
+    async_fields = GatewayRunner._ASYNC_GROUP_KEY_FIELDS
+
+    assert completion_fields[:2] == ("parent_session_id", "session_key")
+    assert async_fields[:3] == ("session_key", "parent_session_id", "task_failure_notice")
+    assert len(completion_fields) == len(set(completion_fields))
+    assert len(async_fields) == len(set(async_fields))
+
+
+class _InlineAsyncFacade:
+    """Exercise the gateway's async boundary without hopping test event loops.
+
+    ``AsyncSessionStore`` and ``AsyncSessionDB`` correctly offload production
+    calls to worker threads.  This suite deliberately stops at session
+    resolution, however, and several contracts make more than one gateway
+    call in one test.  Keeping those small SQLite/routing calls on the test
+    loop avoids binding a fixture-owned database to short-lived executors;
+    it is the same facade shape used by the focused ownership regression.
+    """
+
+    def __init__(self, target):
+        self._store = target
+        self._target = target
+
+    def __getattr__(self, name):
+        value = getattr(self._target, name)
+        if not callable(value):
+            return value
+
+        async def call(*args, **kwargs):
+            return value(*args, **kwargs)
+
+        return call
 
 
 @pytest.fixture
@@ -48,28 +79,41 @@ def native_boundary(tmp_path, monkeypatch):
     runner.config = config
     runner._running = True
     runner.session_store = store
-    runner._async_session_store = AsyncSessionStore(store)
-    runner._session_db = AsyncSessionDB(db)
+    # GatewayRunner consumes both collaborators asynchronously.  Use the
+    # current facade protocol while retaining the real routing store and DB.
+    runner._async_session_store = _InlineAsyncFacade(store)
+    runner._session_db = _InlineAsyncFacade(db)
     runner._completion_delivery_lock = threading.Lock()
     runner._completion_deliveries_inflight = set()
     runner._completion_deliveries_delivered = OrderedDict()
     runner._completion_delivery_retention = 2048
-    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda _source: None)
+    # Event-source reconstruction is covered by the dedicated notification
+    # tests.  Keep this suite at the ownership boundary with the concrete
+    # session source it has just persisted.
+    monkeypatch.setattr(runner, "_build_process_event_source", lambda _event: source)
     resolved = []
     events = []
 
-    def stop_before_model(key, _source):
-        resolved.append(store.lookup_by_session_key(key).session_id)
-        raise _ResolvedBoundary
-
-    monkeypatch.setattr(runner, "_cache_session_source", stop_before_model)
-
     async def handle_message(event):
+        """Current push-adapter admission plus the receiver's pinned-route seam.
+
+        ``BasePlatformAdapter`` accepts the wake before the turn task reaches
+        ``_hmwa_resolve_session``.  This fake keeps that native split but
+        executes only the ownership resolution that precedes model work.  A
+        rejected pin therefore has no admission receipt, while an allowed
+        completion records the resolved live owner.
+        """
         events.append(event)
-        try:
-            await runner._handle_message_with_agent(event, event.source, parent.session_key, 1)
-        except _ResolvedBoundary:
-            pass
+        entry = await runner.async_session_store.get_or_create_session(
+            event.source, touch_activity=False,
+        )
+        pinned_session_id = str(event.metadata.get("gateway_session_id") or "").strip()
+        if pinned_session_id:
+            entry = await runner._resolve_async_delegation_session(entry, pinned_session_id)
+            if entry is None:
+                return
+        resolved.append(entry.session_id)
+        event._gateway_accepted = True
 
     runner.adapters = {Platform.TELEGRAM: SimpleNamespace(handle_message=handle_message)}
     boundary = SimpleNamespace(
@@ -78,7 +122,6 @@ def native_boundary(tmp_path, monkeypatch):
         resolved=resolved, events=events,
     )
     yield boundary
-    db.close()
 
 
 def _completion(boundary, owner="worker"):
@@ -100,9 +143,10 @@ def _assert_foreground_unchanged(b):
     assert goals.load_goal("worker") == goals.GoalState(goal="worker task")
 
 
-def test_worker_process_completion_cannot_promote_worker(native_boundary):
+@pytest.mark.asyncio
+async def test_worker_process_completion_cannot_promote_worker(native_boundary):
     b = native_boundary
-    result = asyncio.run(b.runner._deliver_completion_notification("process finished", _completion(b)))
+    result = await b.runner._deliver_completion_notification("process finished", _completion(b))
     _assert_foreground_unchanged(b)
     assert result is None  # terminal non-gateway owner, not a retry or an ack
     assert b.events == []
@@ -110,7 +154,8 @@ def test_worker_process_completion_cannot_promote_worker(native_boundary):
 
 
 @pytest.mark.parametrize("source", ["subagent", "telegram", "gateway"])
-def test_queued_worker_pin_is_rejected_at_receiver(native_boundary, source):
+@pytest.mark.asyncio
+async def test_queued_worker_pin_is_rejected_at_receiver(native_boundary, source):
     """A queued event can bypass the producer gate; source is mutable metadata."""
     b = native_boundary
     b.db.record_gateway_session_peer(
@@ -122,13 +167,14 @@ def test_queued_worker_pin_is_rejected_at_receiver(native_boundary, source):
         text="late process result", message_type=MessageType.TEXT,
         source=b.source, internal=True, metadata={"gateway_session_id": "worker"},
     )
-    asyncio.run(b.runner.adapters[Platform.TELEGRAM].handle_message(event))
+    await b.runner.adapters[Platform.TELEGRAM].handle_message(event)
     _assert_foreground_unchanged(b)
     assert b.resolved == []
 
 
 @pytest.mark.parametrize("boundary", ["preflight", "receiver"])
-def test_source_only_worker_is_not_a_compression_delivery_tip(native_boundary, boundary):
+@pytest.mark.asyncio
+async def test_source_only_worker_is_not_a_compression_delivery_tip(native_boundary, boundary):
     b = native_boundary
     b.db.end_session(b.parent_id, "compression")
     b.db.create_session("legacy-worker", source="subagent", parent_session_id=b.parent_id)
@@ -136,19 +182,20 @@ def test_source_only_worker_is_not_a_compression_delivery_tip(native_boundary, b
     # source-only worker can still be returned. The delivery boundary must check.
     assert b.db.get_compression_tip(b.parent_id) == "legacy-worker"
     if boundary == "preflight":
-        assert asyncio.run(b.runner._classify_completion_target(b.parent_id)) == "terminal"
+        assert await b.runner._classify_completion_target(b.parent_id, b.parent.session_key) == "terminal"
     else:
-        assert asyncio.run(b.runner._resolve_async_delegation_session(b.parent, b.parent_id)) is None
+        assert await b.runner._resolve_async_delegation_session(b.parent, b.parent_id) is None
         assert b.store._entries[b.parent.session_key].session_id == b.parent_id
 
 
-def test_queued_completion_cannot_recover_route_into_source_only_worker(native_boundary):
+@pytest.mark.asyncio
+async def test_queued_completion_cannot_recover_route_into_source_only_worker(native_boundary):
     b = native_boundary
     b.db.end_session(b.parent_id, "compression")
     b.db.create_session("legacy-worker", source="subagent", parent_session_id=b.parent_id)
     event = MessageEvent(text="queued result", source=b.source, internal=True,
                          metadata={"gateway_session_id": b.parent_id})
-    asyncio.run(b.runner.adapters[Platform.TELEGRAM].handle_message(event))
+    await b.runner.adapters[Platform.TELEGRAM].handle_message(event)
     assert b.resolved == []
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == b.parent_id
     assert b.db.get_session(b.parent_id)["end_reason"] == "compression"
@@ -156,7 +203,8 @@ def test_queued_completion_cannot_recover_route_into_source_only_worker(native_b
 
 @pytest.mark.parametrize("owner", ["parent", "worker", "grandchild"])
 @pytest.mark.parametrize("count", [1, 3])
-def test_native_watchers_settle_without_forwarding_workers(
+@pytest.mark.asyncio
+async def test_native_watchers_settle_without_forwarding_workers(
     native_boundary, monkeypatch, tmp_path, caplog, owner, count,
 ):
     """Real watcher, batching, classifier, injector and receiver; no child process."""
@@ -192,7 +240,7 @@ def test_native_watchers_settle_without_forwarding_workers(
             b.runner._run_process_watcher(w) for w in watchers
         )), timeout=3)
 
-    asyncio.run(run_watchers())
+    await run_watchers()
     _assert_foreground_unchanged(b)
     assert b.resolved == ([b.parent_id] if owner == "parent" else [])
     if owner != "parent":
@@ -204,7 +252,8 @@ def test_native_watchers_settle_without_forwarding_workers(
 
 
 @pytest.mark.parametrize("end_reason", [None, "idle_timeout", "compression"])
-def test_worker_lifecycle_never_becomes_parent_authority(native_boundary, end_reason):
+@pytest.mark.asyncio
+async def test_worker_lifecycle_never_becomes_parent_authority(native_boundary, end_reason):
     b = native_boundary
     # Real peer refresh masks the original source; _delegate_from is durable.
     b.db.record_gateway_session_peer(
@@ -218,32 +267,35 @@ def test_worker_lifecycle_never_becomes_parent_authority(native_boundary, end_re
             model_config={"_delegate_from": b.parent_id},
         )
     for owner in (["worker", "worker-tip"] if end_reason == "compression" else ["worker"]):
-        assert asyncio.run(b.runner._deliver_completion_notification("finished", _completion(b, owner))) is None
-        assert asyncio.run(b.runner._resolve_async_delegation_session(b.parent, owner)) is None
+        assert await b.runner._deliver_completion_notification("finished", _completion(b, owner)) is None
+        assert await b.runner._resolve_async_delegation_session(b.parent, owner) is None
     _assert_foreground_unchanged(b)
     assert b.events == []
 
 
-def test_parent_owned_delegation_result_still_delivers(native_boundary):
+@pytest.mark.asyncio
+async def test_parent_owned_delegation_result_still_delivers(native_boundary):
     b = native_boundary
     evt = _completion(b, b.parent_id)
     evt.update(type="async_delegation", delegation_id="")
-    assert asyncio.run(b.runner._deliver_completion_notification("worker summary", evt)) is True
+    assert await b.runner._deliver_completion_notification("worker summary", evt) is True
     _assert_foreground_unchanged(b)
     assert b.resolved == [b.parent_id]
 
 
-def test_nested_delegation_result_is_not_forwarded_to_foreground(native_boundary):
+@pytest.mark.asyncio
+async def test_nested_delegation_result_is_not_forwarded_to_foreground(native_boundary):
     b = native_boundary
     evt = _completion(b, "worker")
     evt.update(type="async_delegation", delegation_id="")
-    assert asyncio.run(b.runner._deliver_completion_notification("grandchild summary", evt)) is None
+    assert await b.runner._deliver_completion_notification("grandchild summary", evt) is None
     _assert_foreground_unchanged(b)
     assert b.events == []
 
 
 @pytest.mark.parametrize("route", ["parent", "middle", "tip"])
-def test_verified_compression_delivery_preserves_human_goal(native_boundary, route):
+@pytest.mark.asyncio
+async def test_verified_compression_delivery_preserves_human_goal(native_boundary, route):
     b = native_boundary
     goal = b.db.get_meta(f"goal:{b.parent_id}")
     previous = b.parent_id
@@ -255,7 +307,7 @@ def test_verified_compression_delivery_preserves_human_goal(native_boundary, rou
     if route != "parent":
         # Native CAS route movement, not manual /resume reopening the parent.
         b.store.advance_compression_session(b.parent.session_key, b.parent_id, route)
-    assert asyncio.run(b.runner._deliver_completion_notification("finished", _completion(b, b.parent_id))) is True
+    assert await b.runner._deliver_completion_notification("finished", _completion(b, b.parent_id)) is True
     assert b.resolved == ["tip"]
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == "tip"
     assert b.db.get_session(b.parent_id)["end_reason"] == "compression"
@@ -264,29 +316,32 @@ def test_verified_compression_delivery_preserves_human_goal(native_boundary, rou
 
 
 @pytest.mark.parametrize("reason", ["session_reset", "new_session", "user_exit", "session_switch"])
-def test_user_boundary_blocks_delayed_parent_completion(native_boundary, reason):
+@pytest.mark.asyncio
+async def test_user_boundary_blocks_delayed_parent_completion(native_boundary, reason):
     b = native_boundary
     b.db.end_session(b.parent_id, reason)
-    assert asyncio.run(b.runner._deliver_completion_notification("stale", _completion(b, b.parent_id))) is None
-    assert asyncio.run(b.runner._resolve_async_delegation_session(b.parent, b.parent_id)) is None
+    assert await b.runner._deliver_completion_notification("stale", _completion(b, b.parent_id)) is None
+    assert await b.runner._resolve_async_delegation_session(b.parent, b.parent_id) is None
     assert b.db.get_session(b.parent_id)["end_reason"] == reason
     assert b.events == []
 
 
-def test_compression_pin_cannot_cross_new_route(native_boundary):
+@pytest.mark.asyncio
+async def test_compression_pin_cannot_cross_new_route(native_boundary):
     b = native_boundary
     b.db.end_session(b.parent_id, "compression")
     b.db.create_session("tip", source="telegram", parent_session_id=b.parent_id)
     b.store.advance_compression_session(b.parent.session_key, b.parent_id, "tip")
     fresh = b.store.reset_session(b.parent.session_key)
     fresh_id = fresh.session_id
-    assert asyncio.run(b.runner._resolve_async_delegation_session(fresh, b.parent_id)) is None
+    assert await b.runner._resolve_async_delegation_session(fresh, b.parent_id) is None
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == fresh_id
     assert b.db.get_session(fresh_id)["ended_at"] is None
 
 
 @pytest.mark.parametrize("boundary", ["receiver", "native_delivery", "tip", "preflight"])
-def test_reset_of_stale_compression_route_is_not_continuation(native_boundary, boundary):
+@pytest.mark.asyncio
+async def test_reset_of_stale_compression_route_is_not_continuation(native_boundary, boundary):
     b = native_boundary
     b.db.end_session(b.parent_id, "compression")
     b.db.create_session("tip", source="telegram", parent_session_id=b.parent_id)
@@ -296,11 +351,11 @@ def test_reset_of_stale_compression_route_is_not_continuation(native_boundary, b
     if boundary == "tip":
         assert b.db.get_compression_tip(b.parent_id) == "tip"
     elif boundary == "preflight":
-        assert asyncio.run(b.runner._classify_completion_target(b.parent_id, b.parent.session_key)) == "terminal"
+        assert await b.runner._classify_completion_target(b.parent_id, b.parent.session_key) == "terminal"
     elif boundary == "receiver":
-        assert asyncio.run(b.runner._resolve_async_delegation_session(fresh, b.parent_id)) is None
+        assert await b.runner._resolve_async_delegation_session(fresh, b.parent_id) is None
     else:
-        asyncio.run(b.runner._deliver_completion_notification("stale", _completion(b, b.parent_id)))
+        await b.runner._deliver_completion_notification("stale", _completion(b, b.parent_id))
         assert b.resolved == []
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == fresh_id
     assert b.db.get_session(fresh_id)["ended_at"] is None
@@ -317,7 +372,8 @@ def test_manual_resume_store_operation_is_separate_from_notification_authority(n
 
 
 @pytest.mark.parametrize("existing_human_goal", [False, True])
-def test_already_bound_worker_origin_can_receive_own_completion(native_boundary, monkeypatch, existing_human_goal):
+@pytest.mark.asyncio
+async def test_already_bound_worker_origin_can_receive_own_completion(native_boundary, monkeypatch, existing_human_goal):
     b = native_boundary
     # Give a historical worker-origin row native same-user peer provenance.
     # Then execute the real /resume handler and its ownership authorization.
@@ -328,7 +384,7 @@ def test_already_bound_worker_origin_can_receive_own_completion(native_boundary,
     for hook in ("_release_running_agent_state", "_clear_conversation_scope", "_evict_cached_agent"):
         monkeypatch.setattr(b.runner, hook, lambda *_a, **_kw: None)
     resume = MessageEvent(text="/resume worker", source=b.source)
-    confirmation = asyncio.run(b.runner._handle_resume_command(resume))
+    confirmation = await b.runner._handle_resume_command(resume)
     assert "resumed" in confirmation.lower()
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == "worker"
     if existing_human_goal:
@@ -338,7 +394,7 @@ def test_already_bound_worker_origin_can_receive_own_completion(native_boundary,
         goals.save_goal("worker", goals.GoalState(goal="current human goal"))
     before = b.db.get_messages("worker")
     goal = b.db.get_meta("goal:worker")
-    result = asyncio.run(b.runner._deliver_completion_notification("own process finished", _completion(b)))
+    result = await b.runner._deliver_completion_notification("own process finished", _completion(b))
     assert result is True
     assert b.resolved == ["worker"]
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == "worker"
@@ -349,26 +405,28 @@ def test_already_bound_worker_origin_can_receive_own_completion(native_boundary,
     assert goals.load_goal("worker").goal == ("current human goal" if existing_human_goal else "worker task")
 
 
-def test_same_worker_on_another_route_is_not_authority_for_this_route(native_boundary):
+@pytest.mark.asyncio
+async def test_same_worker_on_another_route_is_not_authority_for_this_route(native_boundary):
     b = native_boundary
     other_source = SessionSource(platform=Platform.TELEGRAM, chat_id="999", user_id="999", chat_type="dm")
     other = b.store.get_or_create_session(other_source)
     b.store.switch_session(other.session_key, "worker")
-    assert asyncio.run(b.runner._deliver_completion_notification("wrong route", _completion(b))) is None
+    assert await b.runner._deliver_completion_notification("wrong route", _completion(b)) is None
     _assert_foreground_unchanged(b)
     assert b.events == []
 
 
-def test_receiver_rechecks_after_bound_worker_preflight_and_new(native_boundary):
+@pytest.mark.asyncio
+async def test_receiver_rechecks_after_bound_worker_preflight_and_new(native_boundary):
     b = native_boundary
     b.store.switch_session(b.parent.session_key, "worker")
-    assert asyncio.run(b.runner._classify_completion_target("worker", b.parent.session_key)) == "deliver"
+    assert await b.runner._classify_completion_target("worker", b.parent.session_key) == "deliver"
     fresh = b.store.reset_session(b.parent.session_key)
     fresh_id = fresh.session_id
     # Already-queued pin from BEFORE /new bypasses producer preflight.
     event = MessageEvent(text="late own process", source=b.source, internal=True,
                          metadata={"gateway_session_id": "worker"})
-    asyncio.run(b.runner.adapters[Platform.TELEGRAM].handle_message(event))
+    await b.runner.adapters[Platform.TELEGRAM].handle_message(event)
     assert b.resolved == []
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == fresh_id
     assert b.db.get_session("worker")["end_reason"] == "session_reset"
@@ -376,7 +434,8 @@ def test_receiver_rechecks_after_bound_worker_preflight_and_new(native_boundary)
 
 
 @pytest.mark.parametrize("advance_route", [False, True])
-def test_resumed_foreground_delayed_completion_survives_rotation(native_boundary, monkeypatch, advance_route):
+@pytest.mark.asyncio
+async def test_resumed_foreground_delayed_completion_survives_rotation(native_boundary, monkeypatch, advance_route):
     b = native_boundary
     b.db.record_gateway_session_peer(
         "worker", source="telegram", user_id="123", chat_id="123",
@@ -384,8 +443,8 @@ def test_resumed_foreground_delayed_completion_survives_rotation(native_boundary
     )
     for hook in ("_release_running_agent_state", "_clear_conversation_scope", "_evict_cached_agent"):
         monkeypatch.setattr(b.runner, hook, lambda *_a, **_kw: None)
-    confirmation = asyncio.run(b.runner._handle_resume_command(
-        MessageEvent(text="/resume worker", source=b.source)))
+    confirmation = await b.runner._handle_resume_command(
+        MessageEvent(text="/resume worker", source=b.source))
     assert "resumed" in confirmation.lower()
     provenance = b.db.get_session("worker")["model_config"]
     b.db.publish_compression_child(
@@ -396,7 +455,7 @@ def test_resumed_foreground_delayed_completion_survives_rotation(native_boundary
     assert b.db.get_compression_tip("worker") == "foreground-tip"
     if advance_route:
         assert b.store.advance_compression_session(b.parent.session_key, "worker", "foreground-tip")
-    result = asyncio.run(b.runner._deliver_completion_notification("delayed own process", _completion(b)))
+    result = await b.runner._deliver_completion_notification("delayed own process", _completion(b))
     assert result is True
     assert b.store.lookup_by_session_key(b.parent.session_key).session_id == "foreground-tip"
     assert b.db.get_session("foreground-tip")["ended_at"] is None
@@ -405,7 +464,8 @@ def test_resumed_foreground_delayed_completion_survives_rotation(native_boundary
 
 
 @pytest.mark.parametrize("route", ["worker", "middle", "foreground-tip"])
-def test_resumed_owner_pin_survives_multiple_native_rotations(native_boundary, route):
+@pytest.mark.asyncio
+async def test_resumed_owner_pin_survives_multiple_native_rotations(native_boundary, route):
     b = native_boundary
     b.store.switch_session(b.parent.session_key, "worker")
     for parent, child in (("worker", "middle"), ("middle", "foreground-tip")):
@@ -418,7 +478,7 @@ def test_resumed_owner_pin_survives_multiple_native_rotations(native_boundary, r
     if route != "worker":
         b.store.advance_compression_session(b.parent.session_key, "worker", route)
     goals.save_goal("foreground-tip", goals.GoalState(goal="current human goal"))
-    assert asyncio.run(b.runner._deliver_completion_notification("backlog", _completion(b))) is True
+    assert await b.runner._deliver_completion_notification("backlog", _completion(b)) is True
     assert b.resolved == ["foreground-tip"]
     assert goals.load_goal("foreground-tip").goal == "current human goal"
     assert b.db.get_messages("foreground-tip")[0]["content"] == "Continue the human goal"
@@ -426,7 +486,8 @@ def test_resumed_owner_pin_survives_multiple_native_rotations(native_boundary, r
 
 @pytest.mark.parametrize("owner", ["worker", "grandchild", "legacy-worker"])
 @pytest.mark.parametrize("foreign_route", [False, True])
-def test_worker_compression_is_not_foreground_adoption(native_boundary, owner, foreign_route):
+@pytest.mark.asyncio
+async def test_worker_compression_is_not_foreground_adoption(native_boundary, owner, foreign_route):
     b = native_boundary
     if owner == "grandchild":
         b.db.create_session(owner, source="subagent", parent_session_id="worker",
@@ -445,10 +506,10 @@ def test_worker_compression_is_not_foreground_adoption(native_boundary, owner, f
         other = b.store.get_or_create_session(SessionSource(
             platform=Platform.TELEGRAM, chat_id="999", user_id="999", chat_type="dm"))
         b.store.switch_session(other.session_key, "worker-tip")
-    assert asyncio.run(b.runner._deliver_completion_notification("wrong route", _completion(b, owner))) is None
+    assert await b.runner._deliver_completion_notification("wrong route", _completion(b, owner)) is None
     event = MessageEvent(text="queued worker", source=b.source, internal=True,
                          metadata={"gateway_session_id": owner})
-    asyncio.run(b.runner.adapters[Platform.TELEGRAM].handle_message(event))
+    await b.runner.adapters[Platform.TELEGRAM].handle_message(event)
     _assert_foreground_unchanged(b)
     assert b.resolved == []
 
@@ -467,7 +528,8 @@ def test_parentage_without_delegation_marker_is_not_worker(config):
 
 @pytest.mark.parametrize('rejected_kind', ['worker', 'grandchild', 'reset_parent'])
 @pytest.mark.parametrize('rejected_first', [False, True])
-def test_mixed_batch_preserves_each_owners_boundary(
+@pytest.mark.asyncio
+async def test_mixed_batch_preserves_each_owners_boundary(
     native_boundary, monkeypatch, tmp_path, rejected_kind, rejected_first,
 ):
     import tools.process_registry as pr
@@ -484,8 +546,8 @@ def test_mixed_batch_preserves_each_owners_boundary(
     foreground = b.store.lookup_by_session_key(b.parent.session_key).session_id
     goal_before = b.db.get_meta(f'goal:{foreground}')
     messages_before = b.db.get_messages(foreground)
-    assert asyncio.run(b.runner._classify_completion_target(rejected_id, b.parent.session_key)) == 'terminal'
-    assert asyncio.run(b.runner._classify_completion_target(foreground, b.parent.session_key)) == 'deliver'
+    assert await b.runner._classify_completion_target(rejected_id, b.parent.session_key) == 'terminal'
+    assert await b.runner._classify_completion_target(foreground, b.parent.session_key) == 'deliver'
 
     monkeypatch.setattr(pr, 'CHECKPOINT_PATH', tmp_path / 'processes.json')
     registry = pr.ProcessRegistry()
@@ -512,7 +574,7 @@ def test_mixed_batch_preserves_each_owners_boundary(
         await asyncio.wait_for(asyncio.gather(*(
             b.runner._run_process_watcher(w) for w in watchers
         )), timeout=3)
-    asyncio.run(run_watchers())
+    await run_watchers()
 
     # Positive control: legitimate parent output still reaches native resolution.
     assert b.resolved == [foreground]

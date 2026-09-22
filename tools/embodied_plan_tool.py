@@ -36,7 +36,11 @@ from typing import Any
 import httpx
 
 from tools.registry import registry
-from tools.bot_api_url_ctx import get_bot_api_url
+from tools.bot_api_url_ctx import (
+    get_bot_api_url,
+    get_context_bot_api_url,
+    has_bot_api_url_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +50,19 @@ def _service_url() -> str:
 
 
 def _bot_api_url(args: dict[str, Any]) -> str | None:
-    """Resolve bot API URL from args, env, or gateway context."""
-    return args.get("bot_api_url") or os.environ.get("BOT_API_URL") or get_bot_api_url() or None
+    """Resolve explicit input first, then the current gateway turn's bot.
+
+    The context value must win over process environment state: a multiplexed
+    gateway may be serving a different DaemonCraft profile than the launch
+    profile that populated ``BOT_API_URL``.
+    """
+    return (
+        args.get("bot_api_url")
+        or get_context_bot_api_url()
+        or os.environ.get("BOT_API_URL")
+        or get_bot_api_url()
+        or None
+    )
 
 
 def _timeout() -> float:
@@ -73,7 +88,7 @@ except Exception as _import_err:  # pragma: no cover
 def _policy_mode_default() -> str:
     """Platform-aware default: 'auto' when DaemonCraft bot context is detected,
     'raw' for CLI and other platforms (backward compatibility)."""
-    return "auto" if os.environ.get("BOT_API_URL") else "raw"
+    return "auto" if has_bot_api_url_context() or os.environ.get("BOT_API_URL") else "raw"
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +541,7 @@ def _check_service_available() -> bool:
 registry.register(
     name="embodied_plan",
     toolset="embodiment",
-    schema=EMBODIED_PLAN_SCHEMA,
+    schema=EMBODIED_PLAN_SCHEMA["function"],
     handler=_handler,
     check_fn=_check_service_available,
     emoji="🤖",

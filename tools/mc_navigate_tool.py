@@ -203,8 +203,6 @@ registry.register(
     name="mc_navigate",
     toolset="embodiment",
     schema={
-        "type": "function",
-        "function": {
             "name": "mc_navigate",
             "description": (
                 "Semantic + geometric perception macros for the Minecraft world. "
@@ -252,7 +250,6 @@ registry.register(
                 },
                 "required": ["action"],
             },
-        },
     },
     handler=_handler,
     emoji="🧭",

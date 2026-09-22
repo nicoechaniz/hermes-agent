@@ -31,6 +31,7 @@ from gateway.platforms.daemoncraft_antiloop import StuckPivotTracker
 from gateway.platforms.daemoncraft_narrategate import (
     NarrateGateTracker,
 )
+from hermes_constants import get_scratch_dir
 
 # ---------------------------------------------------------------------------
 # CycleDetector — ported from daemoncraft agents/safety.py (stdlib-only)
@@ -105,6 +106,8 @@ class CycleDetector:
         self._buf.clear()
         self._last_triggered_sig = None
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms._shared import extra_or_secret
+from hermes_constants import get_hermes_home
 from gateway.session import SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
@@ -162,7 +165,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         self._session_epoch: int = int(time.time() * 1_000_000)  # microsecond resolution — practically zero collision risk between gateway restarts
 
         # Load allowlist by UUID (preferred) or username fallback.
-        raw_allow = os.getenv("DAEMONCRAFT_ALLOWED_USERS", "").strip()
+        raw_allow = str(extra_or_secret(config.extra, "allowed_users", "DAEMONCRAFT_ALLOWED_USERS", "")).strip()
         if raw_allow:
             self._allowed_users = {u.strip().lower() for u in raw_allow.split(",") if u.strip()}
 
@@ -204,9 +207,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         context stream, which the CLI can observe.
         """
         try:
-            # Match agent_loop's path: ~/.hermes/sessions/<BOT_USERNAME>-events.jsonl
+            # Profile-owned bridge path: the active runner scope selects the
+            # right home for multiplexed DaemonCraft bots.
             bot_user = (os.getenv("MC_USERNAME") or self._bot_username or "CompAII")
-            queue_path = Path.home() / ".hermes" / "sessions" / f"{bot_user}-events.jsonl"
+            queue_path = get_hermes_home() / "sessions" / f"{bot_user}-events.jsonl"
             queue_path.parent.mkdir(parents=True, exist_ok=True)
             with open(queue_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event) + "\n")
@@ -228,8 +232,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                     mode_data = data.get("data") if data.get("ok") else {}
                     return mode_data.get("mode") == "lab"
         except Exception:
-            pass
-        return False
+            logger.warning("[DaemonCraft] controller mode unavailable; failing closed to lab semantics")
+        # A controller outage must never make an observation/lab bot act.
+        return True
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -278,9 +283,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             logger.warning("[DaemonCraft] controller_mode fetch failed at connect: %s; defaulting to '%s' "
                            "(will refresh on first heartbeat)", _ce, self._controller_mode_cache)
 
-        n = int(os.getenv("MC_CYCLE_N", "0"))
-        window = int(os.getenv("MC_CYCLE_WINDOW", "20"))
-        action = os.getenv("MC_CYCLE_ACTION", "warn")
+        n = int(extra_or_secret(self.config.extra, "cycle_n", "MC_CYCLE_N", "0"))
+        window = int(extra_or_secret(self.config.extra, "cycle_window", "MC_CYCLE_WINDOW", "20"))
+        action = str(extra_or_secret(self.config.extra, "cycle_action", "MC_CYCLE_ACTION", "warn"))
         if n > 0:
             self._cycle_detector = CycleDetector(n=n, window=window, action=action)
             logger.info("[DaemonCraft] CycleDetector enabled: n=%d window=%d action=%s", n, window, action)
@@ -319,6 +324,9 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         continuity when the L4 is meant to keep acting).
         """
         from tools.bot_api_url_ctx import set_bot_api_url, reset_bot_api_url
+        if event.channel_prompt is None:
+            prompt = (self.config.extra or {}).get("system_prompt")
+            event.channel_prompt = str(prompt) if prompt else None
         if event.text and await self._is_lab_mode():
             stripped = self._strip_reentry_note(event.text)
             if stripped != event.text:
@@ -429,7 +437,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
             import yaml
             from pathlib import Path as _Path
             bots = set()
-            casts_dir = _Path.home() / "Projects" / "DaemonCraft" / "agents" / "casts"
+            casts_dir = _Path((self.config.extra or {}).get("casts_dir") or (_Path.home() / "Projects" / "DaemonCraft" / "agents" / "casts"))
             try:
                 for cf in sorted(casts_dir.glob("*.yaml")):
                     cfg = yaml.safe_load(cf.read_text(encoding="utf-8")) or {}
@@ -1492,6 +1500,7 @@ class DaemonCraftAdapter(BasePlatformAdapter):
                 "player": from_,
                 "text": text,
             })
+            return
 
         event = MessageEvent(
             text=text,
@@ -1623,8 +1632,8 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         set it. No env var → emitter still fires under the username.
         """
         try:
-            cast = os.getenv("DAEMONCRAFT_METRICS_CAST", "").strip() or self._bot_username or "daemoncraft"
-            metrics_root = Path(os.getenv("DAEMONCRAFT_METRICS_DIR", str(Path.home() / ".hermes" / "metrics")))
+            cast = str(extra_or_secret(self.config.extra, "metrics_cast", "DAEMONCRAFT_METRICS_CAST", "")).strip() or self._bot_username or "daemoncraft"
+            metrics_root = Path(extra_or_secret(self.config.extra, "metrics_dir", "DAEMONCRAFT_METRICS_DIR", get_hermes_home() / "metrics"))
             now = _dt.datetime.utcnow()
             cast_dir = metrics_root / cast
             cast_dir.mkdir(parents=True, exist_ok=True)
@@ -1758,10 +1767,10 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         try:
             import shutil
 
-            tts_dir = "/tmp/daemoncraft-tts"
-            os.makedirs(tts_dir, exist_ok=True)
+            tts_dir = get_scratch_dir() / "daemoncraft-tts"
+            tts_dir.mkdir(parents=True, exist_ok=True)
             filename = os.path.basename(audio_path)
-            dest = os.path.join(tts_dir, filename)
+            dest = tts_dir / filename
             shutil.copy2(audio_path, dest)
 
             # Build public URL — bot API serves /tts/audio/:filename

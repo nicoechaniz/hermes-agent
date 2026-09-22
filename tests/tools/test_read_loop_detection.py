@@ -19,12 +19,9 @@ import json
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.file_tools import (
-    read_file_tool,
-    search_tool,
-    notify_other_tool_call,
-    _read_tracker,
-)
+from tools.file_tools import read_file_tool, search_tool
+from tools.file_tools_read_tracking import _read_tracker
+from tools.file_tools_read_tracking import notify_other_tool_call
 
 
 class _FakeReadResult:
@@ -84,23 +81,24 @@ class TestReadLoopDetection(unittest.TestCase):
 
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_fourth_consecutive_read_keeps_warning(self, _mock_ops):
-        """4th consecutive read remains available with an escalating warning."""
+    def test_fourth_consecutive_read_is_blocked(self, _mock_ops):
+        """4th consecutive read of the same region is BLOCKED — no content."""
         for _ in range(3):
             read_file_tool("/tmp/test.py", task_id="t1")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("4 times", result["_warning"])
-        self.assertIn("content", result)
+        self.assertIn("error", result)
+        self.assertIn("BLOCKED", result["error"])
+        self.assertIn("4 times", result["error"])
+        self.assertNotIn("content", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_fifth_consecutive_read_keeps_warning(self, _mock_ops):
-        """Subsequent reads remain available with an incrementing warning."""
+    def test_fifth_consecutive_read_still_blocked(self, _mock_ops):
+        """Subsequent reads remain blocked with incrementing count."""
         for _ in range(4):
             read_file_tool("/tmp/test.py", task_id="t1")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("5 times", result["_warning"])
-        self.assertIn("content", result)
+        self.assertIn("BLOCKED", result["error"])
+        self.assertIn("5 times", result["error"])
 
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())

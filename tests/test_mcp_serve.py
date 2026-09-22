@@ -522,9 +522,8 @@ class TestEventBridge:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
-    """Create a fully wired MCP server for E2E testing."""
-    mcp = pytest.importorskip("mcp", reason="MCP SDK not installed")
+def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch, require_mcp_2_sdk):
+    """Create a fully wired MCP server for E2E testing (pinned SDK: 1.x lacks mcp.server.MCPServer)."""
     import mcp_serve
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
@@ -987,14 +986,14 @@ class TestToolRegistration:
 # ---------------------------------------------------------------------------
 
 class TestServerCreation:
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_create_server(self, populated_sessions_dir, monkeypatch):
-        pytest.importorskip("mcp", reason="MCP SDK not installed")
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
         assert mcp_serve.create_mcp_server() is not None
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_create_with_bridge(self, populated_sessions_dir, monkeypatch):
-        pytest.importorskip("mcp", reason="MCP SDK not installed")
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
         bridge = mcp_serve.EventBridge()
@@ -1340,6 +1339,7 @@ class TestEventBridgePollE2E:
         messages written after the baseline are delivered."""
         import mcp_serve
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         db_path = tmp_path / "state.db"
         db_path.write_text("placeholder")
         session_id = "20260329_150000_history"
@@ -1374,7 +1374,8 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        bumped_mtime = bridge._state_db_mtime + 1.0
+        os.utime(db_path, (bumped_mtime, bumped_mtime))
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1386,6 +1387,7 @@ class TestEventBridgePollE2E:
         baseline default to last_seen=0.0."""
         import mcp_serve
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         db_path = tmp_path / "state.db"
         db_path.write_text("placeholder")
         index: dict = {}
@@ -1412,7 +1414,8 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        bumped_mtime = bridge._state_db_mtime + 1.0
+        os.utime(db_path, (bumped_mtime, bumped_mtime))
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]

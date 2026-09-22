@@ -15,14 +15,9 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
-    KIMI_CODE_CLI_USER_AGENT,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
-    _kimi_cli_credentials_path,
-    _kimi_cli_device_id_path,
-    _read_kimi_cli_credentials,
-    kimi_coding_default_headers,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
@@ -223,6 +218,24 @@ class TestResolveProvider:
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
 
+    def test_alias_chatgpt(self):
+        """Issue #95794: ``--provider chatgpt`` selects the ChatGPT-backed Codex OAuth provider."""
+        assert resolve_provider("chatgpt") == "openai-codex"
+        assert resolve_provider("chatgpt-codex") == "openai-codex"
+
+    def test_alias_chatgpt_every_alias_table(self):
+        """Issue #95794: the runtime (providers.py), the /model parser (models_catalog_static via
+        parse_model_input) and ``hermes auth login`` all resolve the ChatGPT alias, not just auth."""
+        from hermes_cli.providers import normalize_provider
+        from hermes_cli.models import parse_model_input
+        from hermes_cli.auth_commands import _normalize_provider
+
+        assert normalize_provider("chatgpt") == "openai-codex"
+        assert normalize_provider("chatgpt-codex") == "openai-codex"
+        assert parse_model_input("chatgpt:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
+        assert parse_model_input("chatgpt-codex:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
+        assert _normalize_provider("chatgpt") == "openai-codex"
+
     def test_alias_github_copilot(self):
         assert resolve_provider("github-copilot") == "copilot"
 
@@ -311,7 +324,7 @@ class TestResolveProvider:
             lambda env=None: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
-        with pytest.raises(AuthError, match="No inference provider configured"):
+        with pytest.raises(AuthError, match="not connected to any AI provider"):
             resolve_provider("auto")
 
 
@@ -540,11 +553,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _pid: {})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
         )
         monkeypatch.setattr(
-            "agent.anthropic_adapter.is_claude_code_token_valid",
+            "agent.anthropic_credentials.is_claude_code_token_valid",
             lambda creds: True,
         )
         from hermes_cli.main import _has_any_provider_configured
@@ -720,56 +733,6 @@ class TestKimiCodeCredentialAutoDetect:
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
 
-class TestKimiCodeCliPaths:
-    """Support the current Kimi Code home without abandoning legacy installs."""
-
-    def test_current_credentials_take_precedence(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        current = tmp_path / ".kimi-code" / "credentials" / "kimi-code.json"
-        legacy = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
-        current.parent.mkdir(parents=True)
-        legacy.parent.mkdir(parents=True)
-        current.write_text(json.dumps({"access_token": "current"}))
-        legacy.write_text(json.dumps({"access_token": "legacy"}))
-
-        assert _kimi_cli_credentials_path() == current
-        assert _kimi_cli_device_id_path() == tmp_path / ".kimi-code" / "device_id"
-        assert _read_kimi_cli_credentials()["access_token"] == "current"
-
-    def test_legacy_credentials_remain_supported(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        legacy = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
-        legacy.parent.mkdir(parents=True)
-        legacy.write_text(json.dumps({"access_token": "legacy"}))
-
-        assert _kimi_cli_credentials_path() == legacy
-        assert _kimi_cli_device_id_path() == tmp_path / ".kimi" / "device_id"
-        assert _read_kimi_cli_credentials()["access_token"] == "legacy"
-
-    def test_kimi_code_home_override_is_honored(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        custom_home = tmp_path / "custom-kimi"
-        monkeypatch.setenv("KIMI_CODE_HOME", str(custom_home))
-        legacy = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
-        legacy.parent.mkdir(parents=True)
-        legacy.write_text(json.dumps({"access_token": "legacy"}))
-
-        assert _kimi_cli_credentials_path() == (
-            custom_home / "credentials" / "kimi-code.json"
-        )
-        assert _kimi_cli_device_id_path() == custom_home / "device_id"
-
-
-def test_kimi_oauth_headers_advertise_official_cli(monkeypatch):
-    """Inherited Kimi OAuth must be attributed to the Kimi Code plan."""
-    monkeypatch.setattr("hermes_cli.auth._kimi_cli_version", lambda: "9.9.9")
-
-    headers = kimi_coding_default_headers()
-
-    assert headers["User-Agent"] == f"{KIMI_CODE_CLI_USER_AGENT}/9.9.9"
-    assert headers["X-Msh-Platform"] == "kimi_cli"
-
-
 class TestZaiEndpointAutoDetect:
     """Test that resolve_api_key_provider_credentials auto-detects Z.AI endpoints."""
 
@@ -795,6 +758,18 @@ class TestZaiEndpointAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
+
+    def test_failed_probe_is_not_repeated_within_ttl(self, monkeypatch):
+        """A key whose detection fails (429 on every endpoint) is probed once, not on every
+        credential resolution — the picker resolves Z.AI dozens of times per open (#114215)."""
+        from hermes_cli import auth_zai_kimi
+        monkeypatch.setenv("GLM_API_KEY", "glm-key-that-429s")
+        monkeypatch.setattr(auth_zai_kimi, "_zai_probe_failed_until", {})
+        calls = []
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: calls.append(1))
+        for _ in range(3):
+            assert resolve_api_key_provider_credentials("zai")["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert len(calls) == 1
 
 
 class TestZaiParallelProbe:
@@ -897,14 +872,14 @@ class TestKimiMoonshotModelListIsolation:
     """Moonshot (legacy) users must not see Coding Plan-only models."""
 
     def test_moonshot_list_excludes_coding_plan_only_models(self):
-        from hermes_cli.main import _PROVIDER_MODELS
+        from hermes_cli.models import _PROVIDER_MODELS
         moonshot_models = _PROVIDER_MODELS["moonshot"]
         coding_plan_only = {"kimi-for-coding", "kimi-k2-thinking-turbo"}
         leaked = set(moonshot_models) & coding_plan_only
         assert not leaked, f"Moonshot list contains Coding Plan-only models: {leaked}"
 
     def test_moonshot_list_non_empty(self):
-        from hermes_cli.main import _PROVIDER_MODELS
+        from hermes_cli.models import _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["moonshot"]) >= 1
 
 
@@ -918,7 +893,7 @@ class TestHuggingFaceModels:
 
     def test_model_lists_match(self):
         """Model lists in main.py and models.py should be identical."""
-        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as main_models
         from hermes_cli.models import _PROVIDER_MODELS as models_models
         assert main_models["huggingface"] == models_models["huggingface"]
 
@@ -957,9 +932,10 @@ class TestNovitaProvider:
     def test_novita_pricing_cache(self, monkeypatch):
         """_fetch_novita_pricing should cache results in _pricing_cache."""
         from hermes_cli import models as models_mod
+        from hermes_cli import models_pricing
         monkeypatch.setenv("NOVITA_API_KEY", "sk-test-key")
         monkeypatch.setenv("NOVITA_BASE_URL", "https://api.novita.ai/openai/v1")
-        models_mod._pricing_cache.pop("https://api.novita.ai/openai/v1", None)
+        models_pricing._pricing_cache.pop("https://api.novita.ai/openai/v1", None)
 
         call_count = {"n": 0}
         fake_payload = {
@@ -992,17 +968,17 @@ class TestNovitaProvider:
         )
 
         # First call hits the network.
-        first = models_mod._fetch_novita_pricing()
+        first = models_pricing._fetch_novita_pricing()
         assert "x/y" in first
         assert call_count["n"] == 1
 
         # Second call returns cached result without re-hitting the network.
-        second = models_mod._fetch_novita_pricing()
+        second = models_pricing._fetch_novita_pricing()
         assert second == first
         assert call_count["n"] == 1
 
         # force_refresh bypasses the cache.
-        models_mod._fetch_novita_pricing(force_refresh=True)
+        models_pricing._fetch_novita_pricing(force_refresh=True)
         assert call_count["n"] == 2
 
 
@@ -1059,6 +1035,7 @@ def _deepinfra_cache_isolation(monkeypatch):
     a later test's fetch within the failure TTL.
     """
     import hermes_cli.models as _models_mod
+    from hermes_cli import models_pricing
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_neg_cache", {})
     yield
@@ -1085,6 +1062,7 @@ class TestFetchDeepInfraModels:
                 ]}).encode()
 
         import hermes_cli.models as models
+        from hermes_cli import models_pricing
         monkeypatch.setattr(
             models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
         )
@@ -1102,6 +1080,7 @@ class TestFetchDeepInfraModels:
 
     def test_catalog_uses_credential_safe_opener(self, monkeypatch):
         import hermes_cli.models as models
+        from hermes_cli import models_pricing
 
         seen = {}
 
@@ -1174,6 +1153,7 @@ class TestDeepInfraTagFiltering:
         ]}
         from hermes_cli.models import _fetch_deepinfra_models_by_tag
         import hermes_cli.models as _m
+        from hermes_cli import models_pricing
 
         for surface in ("chat", "image-gen", "tts", "stt", "embed"):
             monkeypatch.setattr(
@@ -1226,12 +1206,13 @@ class TestDeepInfraPricingFetcher:
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
         import hermes_cli.models as models
+        from hermes_cli import models_pricing
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
             _make_urlopen_returning(payload),
         )
-        from hermes_cli.models import get_pricing_for_provider
+        from hermes_cli.models_pricing import get_pricing_for_provider
 
         # get_pricing_for_provider → _fetch_deepinfra_pricing dispatch path
         result = get_pricing_for_provider("deepinfra")

@@ -1,27 +1,10 @@
 """Unit tests for CycleDetector ported into gateway/platforms/daemoncraft.py."""
 from __future__ import annotations
 
-import os
-import sys
-import types
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# gateway/platforms/__init__.py eagerly imports yuanbao (httpx) and daemoncraft
-# itself needs aiohttp. Stub missing optional deps before import.
-def _stub_module(name: str, **attrs):
-    if name not in sys.modules:
-        mod = types.ModuleType(name)
-        for k, v in attrs.items():
-            setattr(mod, k, v)
-        sys.modules[name] = mod
-
-_stub_module("httpx")
-_stub_module("aiohttp", WSMsgType=MagicMock(), ClientSession=MagicMock)
-
-# Import the standalone class directly — no server needed
 from gateway.platforms.daemoncraft import CycleDetector
 
 

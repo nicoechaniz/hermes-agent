@@ -1,6 +1,11 @@
 """Tests for the Kimi WebBridge toolset."""
 
 import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,7 +72,7 @@ class TestCheckBridge:
 class TestValidateScreenshotPath:
     def test_default_path(self):
         path = _validate_screenshot_path(None)
-        assert str(path).startswith("/tmp/kimi-webbridge-screenshots/")
+        assert path.parent == Path(tempfile.gettempdir()) / "kimi-webbridge-screenshots"
         assert path.suffix == ".png"
 
     def test_valid_tmp_path(self):
@@ -79,7 +84,7 @@ class TestValidateScreenshotPath:
         assert "foo.png" in str(path)
 
     def test_invalid_path_rejected(self):
-        with pytest.raises(ValueError, match="must be under /tmp or home directory"):
+        with pytest.raises(ValueError, match="must be under a temporary or home directory"):
             _validate_screenshot_path("/etc/passwd")
 
 
@@ -203,7 +208,7 @@ class TestSaveScreenshot:
         with patch("tools.kimi_webbridge.requests.post", return_value=mock):
             result = json.loads(kimi_webbridge_save_screenshot("/etc/evil.png"))
         assert "error" in result
-        assert "must be under /tmp or home directory" in result.get("message", "")
+        assert "must be under a temporary or home directory" in result.get("message", "")
 
 
 class TestErrorHandling:
@@ -213,3 +218,47 @@ class TestErrorHandling:
             result = json.loads(kimi_webbridge_navigate("https://example.com"))
         assert result["error"] is True
         assert "boom" in result["message"]
+
+
+def test_toolset_is_configurable_but_default_off():
+    """The config UI exposes the opt-in without adding it to new installs."""
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _DEFAULT_OFF_TOOLSETS
+
+    assert any(key == "kimi_webbridge" for key, _label, _description in CONFIGURABLE_TOOLSETS)
+    assert "kimi_webbridge" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_model_tools_discovers_and_exposes_registered_tools_without_live_daemon(tmp_path):
+    """A fresh model_tools import discovers the module; a mocked reachability
+    response then exposes every registered schema without a real bridge service."""
+    probe = """
+from unittest.mock import MagicMock, patch
+import sys
+
+import model_tools
+from tools.registry import registry
+
+assert "tools.kimi_webbridge" in sys.modules
+registered = set(registry.get_tool_names_for_toolset("kimi_webbridge"))
+assert registered
+assert all(name.startswith("kimi_webbridge_") for name in registered)
+
+response = MagicMock(status_code=200)
+with patch("tools.kimi_webbridge.requests.post", return_value=response):
+    definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=["kimi_webbridge"],
+        quiet_mode=False,
+        skip_tool_search_assembly=True,
+    )
+exposed = {item["function"]["name"] for item in definitions}
+assert exposed == registered, (exposed, registered)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "HERMES_HOME": str(tmp_path / "hermes-home")},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr

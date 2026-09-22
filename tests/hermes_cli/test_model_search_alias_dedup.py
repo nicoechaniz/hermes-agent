@@ -20,9 +20,8 @@ class TestModelAliasCanonical:
 class TestPickerMergeAliasDedup:
     def test_live_bare_k3_not_duplicated_against_curated_kimi_k3(self):
         """Coding Plan key: live returns bare ``k3``; curated has ``kimi-k3``.
-        Exactly one k3-family row must survive regardless of which alias leads."""
+        Exactly one k3-family row must survive (the curated slug leads)."""
         with (
-            patch("hermes_cli.models.kimi_cli_model_ids", return_value=[]),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={
@@ -38,7 +37,7 @@ class TestPickerMergeAliasDedup:
             out = provider_model_ids("kimi-coding")
 
         k3_rows = [m for m in out if model_alias_canonical(m) == "kimi-k3"]
-        assert len(k3_rows) == 1, out
+        assert k3_rows == ["kimi-k3"], out
         # Live-only entries with no curated twin still surface.
         assert "kimi-for-coding" in out
 

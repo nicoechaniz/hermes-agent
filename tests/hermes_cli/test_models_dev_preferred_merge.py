@@ -29,6 +29,18 @@ from hermes_cli.models import (
 
 
 class TestMergeHelper:
+    def test_deepseek_picker_ignores_models_dev_retired_ids(self):
+        """Native DeepSeek is curated-only: models.dev still indexes the retired ``deepseek-v4-flash*``
+        ids, so the registry union must not re-add them or reorder the picker (#117516)."""
+        with patch(
+            "agent.models_dev.list_agentic_models",
+            return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
+        ), patch("hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
+                patch("hermes_cli.models._profile_live_catalog", return_value=None):
+            out = provider_model_ids("deepseek")
+
+        assert out == ["deepseek-flash", "deepseek-v4-pro"]
+
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
         with patch("agent.models_dev.list_agentic_models", return_value=[]):
@@ -47,32 +59,6 @@ class TestMergeHelper:
 
 
 class TestProviderModelIdsPreferred:
-
-    def test_kimi_catalog_comes_from_official_cli_config(self, tmp_path, monkeypatch):
-        config_home = tmp_path / ".kimi-code"
-        config_home.mkdir()
-        (config_home / "config.toml").write_text(
-            """default_model = "kimi-code/k3-256k"
-
-[models."kimi-code/k3-256k"]
-provider = "managed:kimi-code"
-model = "k3-256k"
-
-[models."kimi-code/k3"]
-provider = "managed:kimi-code"
-model = "k3"
-
-[models."kimi-code/other"]
-provider = "other"
-model = "other"
-""",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("KIMI_CODE_HOME", str(config_home))
-
-        from hermes_cli.models import kimi_cli_model_ids
-
-        assert kimi_cli_model_ids() == ["k3-256k", "k3"]
 
 
 
@@ -131,10 +117,10 @@ model = "other"
             ):
                 custom_models = provider_model_ids("kimi-coding")
 
-        # Kimi Code's curated floor leads with the exact current wire id;
-        # live discovery may still report the shorter ``k3`` alias, which
-        # remains endpoint-scoped and is not exposed by legacy endpoints.
-        assert coding_models[0] == "k3-256k"
+        # The live bare wire id ``k3`` folds into the curated public slug
+        # ``kimi-k3`` (picker alias dedup) — one row, curated slug leads.
+        assert coding_models[0] == "kimi-k3"
+        assert all(model.lower() != "k3" for model in coding_models)
         assert all(model.lower() != "k3" for model in legacy_models)
         assert all(model.lower() != "k3" for model in custom_models)
         # Legacy / custom endpoints never advertise the k3 family at all
@@ -151,7 +137,7 @@ model = "other"
             return None
 
         with (
-            patch("hermes_cli.main._prompt_api_key", return_value=("sk-kimi-test", False)),
+            patch("hermes_cli.main_provider_setup._prompt_api_key", return_value=("sk-kimi-test", False)),
             patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
             patch("hermes_cli.config.get_env_value", return_value=""),
             patch("hermes_cli.config.save_env_value"),
@@ -159,42 +145,7 @@ model = "other"
             _model_flow_kimi({}, current_model="")
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["models"][0] == "k3-256k"
-
-    def test_kimi_setup_flow_uses_cli_oauth_without_api_key_prompt(self):
-        """Kimi CLI OAuth should enter model selection without asking for KIMI_API_KEY."""
-        from hermes_cli.model_setup_flows import _model_flow_kimi
-
-        captured = {}
-
-        def fail_prompt(*_args, **_kwargs):
-            raise AssertionError("Kimi OAuth must not prompt for an API key")
-
-        def fake_select(model_list, **kwargs):
-            captured["models"] = model_list
-            captured["confirm_base_url"] = kwargs.get("confirm_base_url")
-            captured["confirm_api_key"] = kwargs.get("confirm_api_key")
-            return None
-
-        with (
-            patch("hermes_cli.main._prompt_api_key", side_effect=fail_prompt),
-            patch(
-                "hermes_cli.auth.resolve_kimi_coding_runtime_credentials",
-                return_value={
-                    "api_key": "oauth-token",
-                    "base_url": "https://api.kimi.com/coding/v1",
-                    "source": "kimi-cli-oauth",
-                },
-            ),
-            patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
-            patch("hermes_cli.config.get_env_value", return_value=""),
-            patch("hermes_cli.config.save_env_value"),
-        ):
-            _model_flow_kimi({}, current_model="")
-
-        assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["confirm_base_url"] == "https://api.kimi.com/coding/v1"
-        assert captured["confirm_api_key"] == "oauth-token"
+        assert captured["models"][0] == "kimi-k3"
 
 
 class TestOpenRouterAndNousUnchanged:

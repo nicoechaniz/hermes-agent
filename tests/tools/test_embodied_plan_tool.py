@@ -157,6 +157,34 @@ def test_service_url_respects_env(monkeypatch):
     assert _service_url() == "http://10.10.20.5:7790"
 
 
+def test_bot_api_url_prefers_turn_context_over_process_environment(monkeypatch):
+    from tools.bot_api_url_ctx import reset_bot_api_url, set_bot_api_url
+    from tools.embodied_plan_tool import _bot_api_url
+
+    monkeypatch.setenv("BOT_API_URL", "http://launch-profile:3001")
+    monkeypatch.setenv("MC_API_URL", "http://legacy:3001")
+    token = set_bot_api_url("http://session-bot:3001")
+    try:
+        assert _bot_api_url({}) == "http://session-bot:3001"
+        assert _bot_api_url({"bot_api_url": "http://explicit:3001"}) == "http://explicit:3001"
+    finally:
+        reset_bot_api_url(token)
+    assert _bot_api_url({}) == "http://launch-profile:3001"
+
+
+def test_policy_defaults_to_auto_for_context_selected_bot(monkeypatch):
+    from tools.bot_api_url_ctx import reset_bot_api_url, set_bot_api_url
+    from tools.embodied_plan_tool import _policy_mode_default
+
+    monkeypatch.delenv("BOT_API_URL", raising=False)
+    token = set_bot_api_url("http://session-bot:3001")
+    try:
+        assert _policy_mode_default() == "auto"
+    finally:
+        reset_bot_api_url(token)
+    assert _policy_mode_default() == "raw"
+
+
 # ─── Policy-mode tests ────────────────────────────────────────────────────────
 
 def test_policy_mode_raw_explicit():

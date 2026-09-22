@@ -1,12 +1,16 @@
 """Behavior tests for config-driven browser snapshot thresholds."""
 
 import json
+import os
 from unittest.mock import Mock
 
 import pytest
 
 from hermes_cli.config import DEFAULT_CONFIG
 from tools import browser_camofox, browser_tool
+from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_tool_session as bt_session
 
 
 @pytest.fixture(autouse=True)
@@ -24,10 +28,13 @@ def isolated_snapshot_threshold(tmp_path, monkeypatch):
 
 
 def _write_threshold(hermes_home, value):
-    (hermes_home / "config.yaml").write_text(
+    target = hermes_home / "config.yaml"
+    staged = hermes_home / "config.yaml.tmp"
+    staged.write_text(
         f"browser:\n  snapshot_threshold: {value}\n",
         encoding="utf-8",
     )
+    os.replace(staged, target)
 
 
 def _long_snapshot(chars: int) -> str:
@@ -70,7 +77,7 @@ def test_cleanup_reloads_updated_profile_config(isolated_snapshot_threshold):
     _write_threshold(isolated_snapshot_threshold, 15001)
     assert browser_tool.get_browser_snapshot_threshold() == 12000
 
-    browser_tool.cleanup_all_browsers()
+    bt_lifecycle.cleanup_all_browsers()
     assert browser_tool.get_browser_snapshot_threshold() == 15001
 
 
@@ -82,10 +89,10 @@ def test_browser_snapshot_applies_profile_threshold(
     snapshot = _long_snapshot(1500)
 
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
     monkeypatch.setattr(
-        browser_tool,
+        bt_session,
         "_run_browser_command",
         lambda *args, **kwargs: {
             "success": True,
@@ -108,10 +115,10 @@ def test_browser_navigation_applies_profile_threshold(
     snapshot = _long_snapshot(1500)
     task_id = "threshold-navigate-test"
 
-    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
-    monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
     monkeypatch.setattr(
-        browser_tool,
+        bt_session,
         "_get_session_info",
         lambda session_key: {
             "session_name": "threshold-test",
@@ -120,7 +127,7 @@ def test_browser_navigation_applies_profile_threshold(
         },
     )
     monkeypatch.setattr(
-        browser_tool,
+        bt_session,
         "_run_browser_command",
         Mock(
             side_effect=[
