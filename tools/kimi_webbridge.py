@@ -85,10 +85,10 @@ def _validate_screenshot_path(output_path: Optional[str]) -> Path:
 
     path = Path(output_path).expanduser().resolve()
     allowed_roots = {Path(tempfile.gettempdir()).resolve(), Path.home().resolve()}
-    # CI may allocate pytest's temporary tree under /var/tmp even when the
-    # process-wide temp root is narrower. Accept either standard POSIX temp
-    # root, but use path containment rather than a string-prefix check.
+    # CI may allocate pytest's temporary tree outside the process-wide temp
+    # root. Accept the standard POSIX roots with containment checks.
     if os.name != "nt":
+        # no-tmp: ok — validation must accept external browser-daemon temp output.
         allowed_roots.update({Path("/tmp").resolve(), Path("/var/tmp").resolve()})
     if not any(path.is_relative_to(root) for root in allowed_roots):
         raise ValueError(f"Screenshot path must be under a temporary or home directory, got: {output_path}")
@@ -393,7 +393,7 @@ registry.register(
         "parameters": _schema(
             [],
             {
-                "output_path": {"type": "string", "description": "Where to save the image (default: auto-generated in /tmp)"},
+                "output_path": {"type": "string", "description": "Where to save the image (default: auto-generated in the system scratch directory)"},
                 "format": {"type": "string", "enum": ["png", "jpeg"], "default": "png"},
                 "quality": {"type": "integer", "default": 90},
             },

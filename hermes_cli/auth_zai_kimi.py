@@ -68,7 +68,14 @@ def _kimi_cli_version() -> str:
     try:
         kimi_bin = shutil.which("kimi")
         if kimi_bin:
-            result = subprocess.run([kimi_bin, "--version"], capture_output=True, text=True, timeout=5)
+            result = subprocess.run(
+                [kimi_bin, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
             for part in result.stdout.strip().split():
                 part = part.strip().rstrip(",")
                 if part and part[0].isdigit():
