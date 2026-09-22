@@ -228,8 +228,7 @@ def test_xai_text_only_via_tool_surface(matrix_env):
     assert payload["model"] == "grok-imagine-video"
     assert "image" not in payload
     assert "reference_images" not in payload
-    assert payload["storage_options"]["public_url"] is True
-    assert "expires_after" not in payload["storage_options"]
+    assert "storage_options" not in payload
     assert result["video"] == "https://xai-files.example/out.mp4"
     assert result["public_url"] == "https://xai-files.example/out.mp4"
     assert result.get("temporary_url") == "https://xai-cdn/out.mp4"
