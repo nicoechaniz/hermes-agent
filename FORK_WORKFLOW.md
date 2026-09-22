@@ -19,7 +19,6 @@ These are the active branches we intentionally preserve as separable patches ove
 | Branch | Purpose | Notes |
 |--------|---------|-------|
 | `feat/altermundi` | Generic fork fixes and shared Altermundi integration | Owns fork workflow docs, collective-memory plugin wiring, context-aware plugin-command dispatch, completion ownership/lineage fences, and other generic changes that do not belong to a subsystem lane. |
-| `feat/kimi` | Kimi support and corrections | Official Kimi CLI OAuth credential discovery/refresh, `X-Msh-*` headers, a single refresh/retry on 401, and OAuth model discovery for main and auxiliary clients; explicit API keys retain precedence. |
 | `feat/kimi-webbridge` | Kimi WebBridge browser toolset | Real-browser bridge tool and its CLI/toolset registration. |
 | `feat/video-gen-minimax` | Direct MiniMax video generation | Direct MiniMax async generation backend and picker integration; distinct from upstream's MiniMax models routed through FAL. |
 | `feat/daemoncraft` | DaemonCraft gateway / embodied-agent integration | Canonical DaemonCraft patch set. Keep clean over `nousmain`; old messy history lives only in `feat/daemoncraft-legacy` / backups. |
@@ -61,10 +60,10 @@ isolated worktree; preserve the original canonical ref until the complete
 composition passes verification:
 
 ```bash
-git checkout feat/kimi
+git checkout feat/kimi-webbridge
 git rebase nousmain
 # resolve conflicts, run focused tests, then push:
-git push origin feat/kimi --force-with-lease
+git push origin feat/kimi-webbridge --force-with-lease
 ```
 
 Repeat for each active canonical branch. Do not rebase `main` onto feature branches; `main` is rebuilt by merging branches.
@@ -75,7 +74,6 @@ Rebuild integration `main`:
 git checkout main
 git reset --hard nousmain
 git merge --no-ff feat/altermundi
-git merge --no-ff feat/kimi
 git merge --no-ff feat/kimi-webbridge
 git merge --no-ff feat/video-gen-minimax
 git merge --no-ff feat/daemoncraft
@@ -90,11 +88,7 @@ Run tests before pushing. Use the wrapper, never raw `pytest`:
 scripts/run_tests.sh
 ```
 
-For provider-specific fixes, add an end-to-end smoke test when credentials are available. Example for Kimi OAuth:
-
-```bash
-hermes chat --provider kimi-coding -m kimi-k2.6 -q 'Say OK only.' -Q --yolo
-```
+For provider-specific fixes, add an end-to-end smoke test when credentials are available. Never change the operator's active provider or model as part of synchronization.
 
 Push and deploy:
 
