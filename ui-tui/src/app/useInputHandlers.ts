@@ -203,6 +203,10 @@ export function shouldDetachEditedHistoryInput(historyIdx: null | number, histor
   return historyIdx !== null && value !== history[historyIdx]
 }
 
+export function shouldNavigateComposerHistory(input: string, requiresEmptyInput: boolean): boolean {
+  return !requiresEmptyInput || !input
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -663,6 +667,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 
       if (noLineAbove) {
+        if (!shouldNavigateComposerHistory(cState.input, getUiState().historyNavRequiresEmptyInput)) {
+          return
+        }
+
         cycleQueue(1) || cycleHistory(-1)
 
         return
@@ -674,7 +682,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
       const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
 
-      if (noLineBelow || cState.historyIdx !== null) {
+      if (cState.historyIdx !== null) {
+        cycleQueue(-1) || cycleHistory(1)
+
+        return
+      }
+
+      if (noLineBelow) {
+        if (!shouldNavigateComposerHistory(cState.input, getUiState().historyNavRequiresEmptyInput)) {
+          return
+        }
+
         cycleQueue(-1) || cycleHistory(1)
 
         return

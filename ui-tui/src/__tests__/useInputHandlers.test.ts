@@ -10,7 +10,8 @@ import {
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  shouldNavigateComposerHistory
 } from '../app/useInputHandlers.js'
 
 const baseKey = {
@@ -75,6 +76,17 @@ describe('shouldDetachEditedHistoryInput', () => {
 
   it('does not detach an ordinary current draft', () => {
     expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
+  })
+})
+
+describe('shouldNavigateComposerHistory', () => {
+  it('blocks history navigation from a non-empty draft when configured', () => {
+    expect(shouldNavigateComposerHistory('keep this draft', true)).toBe(false)
+    expect(shouldNavigateComposerHistory('', true)).toBe(true)
+  })
+
+  it('preserves the default navigation behavior for non-empty drafts', () => {
+    expect(shouldNavigateComposerHistory('replace this draft', false)).toBe(true)
   })
 })
 
