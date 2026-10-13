@@ -2172,6 +2172,12 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ## Display Settings
 
+The fork also supports `display.ctrl_c_priority` in the classic CLI. Set it to
+`clear_input` to clear a nonempty draft before interrupting the running agent,
+or `interrupt_agent` to interrupt the agent first. With an empty draft, Ctrl+C
+interrupts the active run.
+
+
 ```yaml
 display:
   tool_progress: all      # off | new | all | verbose
