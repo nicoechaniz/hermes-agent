@@ -17,7 +17,7 @@ def test_tool_registered():
     tool = registry.get_entry("embodied_plan")
     assert tool is not None
     assert tool.toolset == "embodiment"
-    assert tool.schema["function"]["name"] == "embodied_plan"
+    assert tool.schema["name"] == "embodied_plan"
 
 
 def test_handler_rejects_missing_intent():
