@@ -16,6 +16,7 @@ import hermes_cli.cli_tui_mixin as mixin_mod
 
 class _Cli(mixin_mod.CLITuiMixin):
     def __init__(self):
+        self.ctrl_c_priority = "clear_input"
         self._agent_running = True
         self.agent = object()
         self._attached_images = []
