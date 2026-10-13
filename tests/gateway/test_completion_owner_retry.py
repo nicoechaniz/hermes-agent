@@ -1,4 +1,4 @@
-"""Durable delivery retries uncertain delegate ancestry without moving the route."""
+"""Durable delivery retries uncertain foreground ownership without moving the route."""
 
 import queue
 import sqlite3
@@ -17,13 +17,13 @@ from tools.process_registry import process_registry
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["readiness", "claimed"])
-@pytest.mark.parametrize("failed_ancestor", ["worker", "owner"])
 async def test_transient_ownership_ancestor_failure_retries_durable_delivery_once(
-    tmp_path, monkeypatch, phase, failed_ancestor, private_db_probe_cleanup,
+    tmp_path, monkeypatch, phase, private_db_probe_cleanup,
 ):
     """An ancestor read error refunds the claim; recovery admits once to the owner.
 
-    Exercise the real SQLite ledger, ownership walk, admission and route resolver.
+    Exercise the real SQLite ledger, foreground ownership, admission and route resolver.
+    The fork never follows worker provenance to a different foreground.
     Only the transient database read and the external transport are substituted.
     Exactly-once here means adapter admission during retry/replay, not crash-atomic
     delivery or exactly-once model execution.
@@ -42,7 +42,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
             db.create_session("nested-worker", source="subagent", model_config={"_delegate_from": "worker"})
             before = {sid: db.get_session(sid) for sid in (owner, "worker", "nested-worker")}
-            ancestor = owner if failed_ancestor == "owner" else "worker"
+            ancestor = owner
             async_db = runner._session_db
             get_session = async_db.get_session
             walk_count = 0
@@ -51,7 +51,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
 
             async def lookup_session(sid):
                 nonlocal walk_count
-                if sid == "nested-worker":
+                if sid == owner:
                     walk_count += 1
                 if fault_enabled and sid == ancestor and (phase == "readiness" or walk_count >= 2):
                     failures.append(sid)
@@ -78,7 +78,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             runner.adapters[Platform.TELEGRAM] = adapter
             event = {
                 "type": "async_delegation", "delegation_id": "owner-retry",
-                "session_key": entry.session_key, "parent_session_id": "nested-worker",
+                "session_key": entry.session_key, "parent_session_id": owner,
                 "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
             }
             ad._persist_dispatch(event)
@@ -148,7 +148,7 @@ async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
 
             async def lookup_session(sid):
                 nonlocal walks
-                if sid == "worker":
+                if sid == owner:
                     walks += 1
                 # Each delivery walks twice, readiness then the claimed preflight; only the second fails.
                 if failing and sid == owner and walks % 2 == 0:
@@ -165,7 +165,7 @@ async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
             runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
             event = {
                 "type": "async_delegation", "delegation_id": "owner-budget",
-                "session_key": entry.session_key, "parent_session_id": "worker",
+                "session_key": entry.session_key, "parent_session_id": owner,
                 "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
             }
             ad._persist_dispatch(event)
@@ -247,7 +247,7 @@ async def test_admitted_delegate_completion_reaches_owner_without_reading_owners
             db.create_session("nested-worker", source="subagent", model_config={"_delegate_from": "worker"})
 
             resolved = await _admit_with_session_rows_unreadable(
-                runner, store, entry, monkeypatch, "owner-admitted", "nested-worker")
+                runner, store, entry, monkeypatch, "owner-admitted", owner)
 
             assert resolved == [owner]
             current = store.lookup_by_session_key(entry.session_key)
@@ -277,7 +277,7 @@ async def test_admitted_completion_reaches_compressed_owners_tip_without_reading
             assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
 
             resolved = await _admit_with_session_rows_unreadable(
-                runner, store, entry, monkeypatch, "tip-admitted", "worker")
+                runner, store, entry, monkeypatch, "tip-admitted", owner)
 
             assert resolved == ["owner-tip"]
             current = store.lookup_by_session_key(entry.session_key)
@@ -323,7 +323,7 @@ async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
             runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
             event = {
                 "type": "async_delegation", "delegation_id": "requeued-owner",
-                "session_key": entry.session_key, "parent_session_id": "worker",
+                "session_key": entry.session_key, "parent_session_id": owner,
                 "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
             }
             ad._persist_dispatch(event)

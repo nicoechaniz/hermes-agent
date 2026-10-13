@@ -67,7 +67,7 @@ async def test_queued_completion_after_admission_preserves_result_or_user_bounda
             adapter._active_sessions[entry.session_key] = asyncio.Event()
             event = {
                 "type": "async_delegation", "delegation_id": "queued-owner",
-                "session_key": entry.session_key, "parent_session_id": "worker",
+                "session_key": entry.session_key, "parent_session_id": owner,
                 "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
             }
             ad._persist_dispatch(event)

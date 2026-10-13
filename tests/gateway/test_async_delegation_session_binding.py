@@ -477,7 +477,12 @@ async def test_delegate_completion_preserves_real_route_ownership(
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None
         route_before = current.session_id
+        # The fork deliberately refuses worker-to-parent forwarding, including
+        # nested delegation. Parent-owned results and explicitly resumed workers
+        # still exercise the upstream durable admission and route contracts.
         rejected = case in {
+            "single", "nested", "relabeled", "limit", "child_to_current", "child_ended",
+            "compression", "idle",
             "over_limit", "missing", "cycle", "malformed", "nonobject", "invalid_marker",
             "empty_marker", "null_marker", "markerless", "null_config", "absent_config",
             "current_boundary", "parent_boundary", "child_boundary", "intermediate_boundary", "compression_foreign",

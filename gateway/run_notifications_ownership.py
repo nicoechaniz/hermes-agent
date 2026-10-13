@@ -1,10 +1,9 @@
 """Completion ownership for GatewayRunner: the session a pinned completion belongs to.
 
 Split out of ``gateway/run_notifications.py`` (itself split out of ``gateway/run.py``); bound onto
-``GatewayRunner`` through ``GatewayNotificationsMixin``. A completion may be pinned to a delegate
-child's execution transcript: ownership follows only ``model_config._delegate_from`` to the
-human-facing session, shared by delivery preflight and route resolution, and no route moves until
-that owner is proven.
+``GatewayRunner`` through ``GatewayNotificationsMixin``. A completion must belong to the foreground session or its verified compression
+continuation. Delegated provenance never grants authority to forward a worker
+completion; explicit human adoption of a worker remains a valid foreground route.
 """
 
 from __future__ import annotations
@@ -92,6 +91,20 @@ class GatewayNotificationOwnershipMixin:
             return "terminal", session_id, row
         if session_id == current_session_id:
             return "deliver", session_id, row
+        config = row.get("model_config")
+        try:
+            if isinstance(config, str):
+                config = json.loads(config)
+        except (TypeError, ValueError):
+            return "terminal", session_id, None
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            return "terminal", session_id, None
+        if "_delegate_from" in config and (
+            not isinstance(config["_delegate_from"], str) or not config["_delegate_from"].strip()
+        ):
+            return "terminal", session_id, None
         if self._is_delegated_completion_owner(row):
             if row.get("ended_at") and row.get("end_reason") == "compression":
                 try:

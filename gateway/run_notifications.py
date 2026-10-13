@@ -1039,6 +1039,14 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 synth_text = _format_gateway_process_notification(evt)
                 if not synth_text:
                     continue
+                parent = str(evt.get("parent_session_id") or "").strip()
+                if parent:
+                    verdict = await self._classify_completion_target(parent, str(evt.get("session_key") or ""))
+                    if verdict == "terminal":
+                        continue  # A worker pin cannot acquire the foreground through a watch event.
+                    if verdict == "retry":
+                        completion_queue.put(evt)
+                        continue
                 try:
                     delivered = await self._inject_watch_notification(synth_text, evt)
                 except Exception:
