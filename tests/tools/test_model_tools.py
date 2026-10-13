@@ -550,6 +550,6 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         st = cfg.stat()
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
-        shutil.copy2(other, cfg)
+        os.replace(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
         assert _tool_defs_cache_key(None, None, False) != before

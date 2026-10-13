@@ -416,6 +416,8 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
         assert "111:10" in adapter._inflight_update_ids
         await app.process_update(update(app.bot))
         await app.stop()
+    # Ownership settles in task done callbacks, after cancellation is complete.
+    await asyncio.gather(*(task for task, _coroutine in scheduled), return_exceptions=True)
     assert len(scheduled) == 1 and not effects
     assert not adapter._inflight_update_ids and not adapter._seen_update_ids
     # The cancelled PTB task never awaited the callback coroutine: it must be closed too.
