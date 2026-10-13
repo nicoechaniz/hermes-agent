@@ -21,6 +21,9 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
     launch-service gateway whose ``gateway.pid`` was unlinked while it kept serving."""
     import json
 
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
     import hermes_constants
     from gateway import status
 

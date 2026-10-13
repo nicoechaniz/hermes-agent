@@ -306,7 +306,15 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler",
                          lambda name: _handler if name == "gsd-bind" else None)
 
-    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "gsd_bind")
+    from types import SimpleNamespace
+    from gateway.run_inbound import snapshot_plugin_command_origin
+    runner.session_store = SimpleNamespace(peek_session_id=lambda _key: None)
+    runner._intake_adapter_for = lambda _source: None
+    runner._adapter_profile_for_source = lambda _source: None
+    origin = snapshot_plugin_command_origin(event, None, None)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+        event, source, "gsd_bind", runner._session_key_for_source(source), origin,
+    )
 
     assert handled is True
     assert result == "Bound: bind"
