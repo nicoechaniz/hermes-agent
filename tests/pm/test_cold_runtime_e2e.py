@@ -207,7 +207,7 @@ assert importlib.util.find_spec('idna') is None
             )
             launched = _run([str(bootstrap_python), "-B", str(entry)], cwd=repo, env=env)
             launch_report = json.loads(launched.stdout)
-            assert Path(launch_report["python"]).is_relative_to(store)
+            assert Path(launch_report["python"]).is_relative_to(store), (launched.stdout, launched.stderr)
             assert launch_report["version"] == list(sys.version_info[:2])
             assert Path(launch_report["idna"]).is_relative_to(hermes_home / "installs")
             assert launched.stderr.count("completing source-update dependencies") == 1
