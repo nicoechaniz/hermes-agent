@@ -128,13 +128,9 @@ class GatewayNotificationOwnershipMixin:
         closed; the result stays in the delegation records. An owner that cannot be confirmed right
         now (``retry``) sends the completions admitted with the event back to the delivery queue.
 
-        A pinned delegated row cannot forward to another foreground through
-        ``model_config._delegate_from`` before any route check or mutation (#92611). Unresolvable
-        provenance — a cycle, a missing parent, a malformed config, or a chain longer than
-        the foreground ownership boundary — drops the injection rather than falling back to the
-        current route entry. That is deliberate: routing an internal child's output into a session
-        whose ownership was never verified is the same class of defect this canonicalization fixes,
-        and the completion remains readable in the delegation records either way.
+        Worker provenance never forwards a completion to another foreground.
+        Explicit human adoption and its verified compression continuations are
+        valid routes; malformed provenance remains fail-closed.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self._session_db)

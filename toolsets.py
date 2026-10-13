@@ -179,10 +179,6 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
-    "altermundi": _ts(
-        "Read-only access to AlterMundi collective memory over anyVPN",
-        ["altermundi_search", "altermundi_doc"],
-    ),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
@@ -269,6 +265,14 @@ TOOLSET_SESSION_PLATFORMS = {name: spec["platforms"] for name, spec in TOOLSETS.
 # these names, so a plugin, MCP server or custom toolset name never leaves the machine.
 BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
 BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
+
+# Fork extensions use the receiver's custom metrics category.
+TOOLSETS.update({
+    "altermundi": _ts(
+        "Read-only access to AlterMundi collective memory over anyVPN",
+        ["altermundi_search", "altermundi_doc"],
+    ),
+})
 
 
 def _registry():
