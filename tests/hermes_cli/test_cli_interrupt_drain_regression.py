@@ -32,13 +32,18 @@ import queue
 from unittest.mock import MagicMock
 
 
-def _make_cli():
+def _make_cli(display_overrides=None):
     """Bare HermesCLI (no __init__) with just the two queues the drain touches."""
     from cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._interrupt_queue = queue.Queue()
     cli._pending_input = queue.Queue()
+    cli.ctrl_c_priority = (display_overrides or {}).get("ctrl_c_priority", "interrupt_agent")
+    cli._last_ctrl_c_time = 0
+    cli._tui_cancel_voice_recording = MagicMock(return_value=False)
+    cli._tui_cancel_foreground_ui = MagicMock(return_value=False)
+    cli._tui_clear_blocking_overlays = MagicMock(return_value=False)
     return cli
 
 
@@ -83,3 +88,41 @@ class TestInterruptQueueDrain:
 
         # Should not raise.
         cli._drain_interrupt_queue_to_pending_input()
+
+
+class TestCtrlCPriority:
+    """``display.ctrl_c_priority`` controls busy-agent draft handling."""
+
+    @staticmethod
+    def _event(text="draft"):
+        buffer = MagicMock()
+        buffer.text = text
+        app = MagicMock(current_buffer=buffer)
+        return MagicMock(app=app), buffer
+
+    def test_clear_input_mode_clears_draft_before_interrupting_busy_agent(self):
+        cli = _make_cli({"ctrl_c_priority": "clear_input"})
+        cli.agent = MagicMock()
+        cli._agent_running = True
+        cli._attached_images = ["image.png"]
+        event, buffer = self._event()
+
+        cli._tui_handle_ctrl_c(event)
+
+        buffer.reset.assert_called_once_with()
+        assert cli._attached_images == []
+        cli.agent.interrupt.assert_not_called()
+        event.app.invalidate.assert_called_once_with()
+
+    def test_default_mode_interrupts_busy_agent_without_clearing_draft(self):
+        cli = _make_cli()
+        cli.agent = MagicMock()
+        cli._agent_running = True
+        cli._attached_images = ["image.png"]
+        event, buffer = self._event()
+
+        cli._tui_handle_ctrl_c(event)
+
+        cli.agent.interrupt.assert_called_once_with()
+        buffer.reset.assert_not_called()
+        assert cli._attached_images == ["image.png"]
