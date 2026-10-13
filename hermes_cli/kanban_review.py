@@ -273,7 +273,6 @@ def create_review_graph(
                 workspace_kind=ws_kind,
                 workspace_path=ws_path,
                 triage=not ready,
-                initial_status="ready",
                 idempotency_key=parent_key,
                 skills=skills,
             )
@@ -302,7 +301,6 @@ def create_review_graph(
                     workspace_kind=ws_kind,
                     workspace_path=ws_path,
                     triage=not ready,
-                initial_status="ready",
                     idempotency_key=rkey,
                     skills=skills,
                 )
@@ -328,7 +326,6 @@ def create_review_graph(
                 workspace_kind=ws_kind,
                 workspace_path=ws_path,
                 triage=not ready,
-                initial_status="ready",
                 idempotency_key=synth_key,
                 parents=tuple(reviewer_ids),
                 skills=skills,
