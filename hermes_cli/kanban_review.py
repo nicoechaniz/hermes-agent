@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect_closing
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +254,7 @@ def create_review_graph(
     created_any = False
     reviewer_ids: list[str] = []
 
-    with kb.connect(board=board) as conn:
+    with connect_closing(board=board) as conn:
         # --- Parent review card ---
         parent_key = _card_key(base_key, "parent")
         existing_parent = conn.execute(
@@ -272,6 +273,7 @@ def create_review_graph(
                 workspace_kind=ws_kind,
                 workspace_path=ws_path,
                 triage=not ready,
+                initial_status="ready",
                 idempotency_key=parent_key,
                 skills=skills,
             )
@@ -300,6 +302,7 @@ def create_review_graph(
                     workspace_kind=ws_kind,
                     workspace_path=ws_path,
                     triage=not ready,
+                initial_status="ready",
                     idempotency_key=rkey,
                     skills=skills,
                 )
@@ -325,6 +328,7 @@ def create_review_graph(
                 workspace_kind=ws_kind,
                 workspace_path=ws_path,
                 triage=not ready,
+                initial_status="ready",
                 idempotency_key=synth_key,
                 parents=tuple(reviewer_ids),
                 skills=skills,

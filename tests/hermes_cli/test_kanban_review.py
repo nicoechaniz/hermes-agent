@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect_closing
 from hermes_cli import kanban_review as kr
 
 
@@ -82,7 +83,7 @@ def test_create_review_graph_smoke(kanban_home, fake_repo):
     assert result["synthesis_id"].startswith("t_")
 
     # Verify synthesis is gated on reviewers
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"]:
             # Reviewers are parallel — they have no parents
             assert kb.parent_ids(conn, rid) == []
@@ -141,7 +142,7 @@ def test_create_review_graph_triage_by_default(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for tid in [result["parent_id"], *result["reviewer_ids"], result["synthesis_id"]]:
             task = kb.get_task(conn, tid)
             assert task.status == "triage"
@@ -155,7 +156,7 @@ def test_create_review_graph_ready_mode(kanban_home, fake_repo):
         repo_path=fake_repo,
         ready=True,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         parent = kb.get_task(conn, result["parent_id"])
         assert parent.status == "ready"
         for rid in result["reviewer_ids"]:
@@ -175,7 +176,7 @@ def test_create_review_graph_assignee_and_skills(kanban_home, fake_repo):
         assignee="miki",
         skills=["github-code-review"],
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for tid in [result["parent_id"], *result["reviewer_ids"], result["synthesis_id"]]:
             task = kb.get_task(conn, tid)
             assert task.assignee == "miki"
@@ -189,7 +190,7 @@ def test_create_review_graph_workspace_is_dir(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for tid in [result["parent_id"], *result["reviewer_ids"], result["synthesis_id"]]:
             task = kb.get_task(conn, tid)
             assert task.workspace_kind == "dir"
@@ -204,7 +205,7 @@ def test_create_review_graph_body_appended(kanban_home, fake_repo):
         repo_path=fake_repo,
         body="Extra context here",
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         parent = kb.get_task(conn, result["parent_id"])
         assert "Extra context here" in parent.body
         assert "nousmain" in parent.body
@@ -218,7 +219,7 @@ def test_create_review_graph_parent_body_has_review_only_contract(kanban_home, f
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         parent = kb.get_task(conn, result["parent_id"])
         assert "REVIEW-ONLY v1" in parent.body
         assert "Do NOT modify source code" in parent.body
@@ -231,7 +232,7 @@ def test_create_review_graph_reviewer_bodies_have_review_only_contract(kanban_ho
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"]:
             task = kb.get_task(conn, rid)
             assert "REVIEW-ONLY v1" in task.body
@@ -245,7 +246,7 @@ def test_create_review_graph_base_head_in_synthesis_body(kanban_home, fake_repo)
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         assert "nousmain" in synth.body
         assert "feat/auth" in synth.body
@@ -311,7 +312,7 @@ def test_cli_review_create_ready_flag(kanban_home, fake_repo):
         f"review create 'Review PR #42' --base nousmain --head feat/auth --repo {fake_repo} --ready --json"
     )
     payload = json.loads(out)
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         parent = kb.get_task(conn, payload["parent_id"])
         assert parent.status == "ready"
 
@@ -324,7 +325,7 @@ def test_cli_review_create_with_skills(kanban_home, fake_repo):
         f"--skill github-code-review --skill security-scan --json"
     )
     payload = json.loads(out)
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         task = kb.get_task(conn, payload["parent_id"])
         assert "github-code-review" in task.skills
         assert "security-scan" in task.skills
@@ -351,7 +352,7 @@ def test_reviewer_bodies_contain_exact_diff_command(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"]:
             task = kb.get_task(conn, rid)
             assert "git diff nousmain...feat/auth --stat" in task.body
@@ -365,7 +366,7 @@ def test_reviewer_bodies_contain_severity_labels(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"]:
             task = kb.get_task(conn, rid)
             assert "**Critical**" in task.body
@@ -380,7 +381,7 @@ def test_reviewer_bodies_contain_kanban_contract(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"]:
             task = kb.get_task(conn, rid)
             assert "kanban_complete" in task.body
@@ -422,7 +423,7 @@ def test_reviewer_bodies_contain_role_specific_checklists(kanban_home, fake_repo
             "Integration / E2E coverage",
         ],
     }
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         roles = ["code-quality", "security", "test-coverage"]
         for rid, role in zip(result["reviewer_ids"], roles):
             task = kb.get_task(conn, rid)
@@ -437,7 +438,7 @@ def test_synthesis_body_contains_go_no_go(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         assert "GO/NO-GO decision" in synth.body
 
@@ -449,7 +450,7 @@ def test_synthesis_body_contains_all_required_sections(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         assert "Blockers" in synth.body
         assert "Recommended fixes" in synth.body
@@ -465,7 +466,7 @@ def test_synthesis_body_contains_default_no_go_on_critical(kanban_home, fake_rep
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         assert "NO-GO" in synth.body
         assert "Critical finding exists" in synth.body
@@ -478,7 +479,7 @@ def test_synthesis_body_contains_kanban_contract(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         assert "kanban_complete" in synth.body
         assert "kanban_block" in synth.body
@@ -500,7 +501,7 @@ def test_generated_bodies_do_not_reference_skills(kanban_home, fake_repo):
         head="feat/auth",
         repo_path=fake_repo,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for tid in result["reviewer_ids"] + [result["synthesis_id"]]:
             task = kb.get_task(conn, tid)
             # Reject explicit skill-loading instructions (case-insensitive)
@@ -524,7 +525,7 @@ def test_reviewer_completion_promotes_synthesis(kanban_home, fake_repo):
         repo_path=fake_repo,
         ready=True,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         assert synth.status == "todo"
 
@@ -546,7 +547,7 @@ def test_synthesis_stays_todo_until_all_reviewers_done(kanban_home, fake_repo):
         repo_path=fake_repo,
         ready=True,
     )
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"][:2]:
             kb.complete_task(conn, rid, summary="review done")
 
@@ -569,7 +570,7 @@ def test_self_contained_reviewer_bodies(kanban_home, fake_repo):
         repo_path=fake_repo,
     )
     ws_path = str(Path(fake_repo).resolve())
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         for rid in result["reviewer_ids"]:
             task = kb.get_task(conn, rid)
             body = task.body
@@ -595,7 +596,7 @@ def test_self_contained_synthesis_body(kanban_home, fake_repo):
         repo_path=fake_repo,
     )
     ws_path = str(Path(fake_repo).resolve())
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         synth = kb.get_task(conn, result["synthesis_id"])
         body = synth.body
         assert "nousmain" in body
@@ -620,7 +621,7 @@ def test_self_contained_parent_body(kanban_home, fake_repo):
         repo_path=fake_repo,
     )
     ws_path = str(Path(fake_repo).resolve())
-    with kb.connect() as conn:
+    with connect_closing() as conn:
         parent = kb.get_task(conn, result["parent_id"])
         body = parent.body
         assert "nousmain" in body
