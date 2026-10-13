@@ -332,6 +332,7 @@ class MiniMaxVideoGenProvider(VideoGenProvider):
             "min_duration": 6,
             "supports_audio": False,
             "supports_negative_prompt": False,
+            "supports_seed": True,
             "max_reference_images": 0,
         }
 
