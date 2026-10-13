@@ -194,7 +194,7 @@ def test_minimax_timeout_returns_error(monkeypatch):
 
 
 def test_video_generate_dispatch_selects_minimax(monkeypatch, tmp_path):
-    import yaml
+    import hermes_yaml as yaml
     import hermes_cli.plugins as plugins_module
     import plugins.video_gen.minimax as minimax
 
