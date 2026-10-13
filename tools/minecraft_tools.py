@@ -1283,7 +1283,7 @@ _BLUEPRINTS_DIR = Path(__file__).parent.parent / "blueprints"
 def _load_story() -> dict:
     if _STORY_PATH.exists():
         try:
-            return json.loads(_STORY_PATH.read_text(encoding="utf-8"))
+            return json.loads(_STORY_PATH.read_text(encoding="utf-8-sig"))
         except Exception:
             pass
     return {
@@ -1511,7 +1511,7 @@ def _handle_mc_story(args: dict, **kwargs) -> str:
         if not target.exists():
             return f"No blueprint found: {target.name}"
         try:
-            bp = json.loads(target.read_text(encoding="utf-8"))
+            bp = json.loads(target.read_text(encoding="utf-8-sig"))
             title = bp.get("metadata", {}).get("title", "Untitled")
             phases = len(bp.get("phases", []))
             entities = len(bp.get("entities", []))
@@ -1702,7 +1702,7 @@ def _handle_mc_registry(args: dict, **kwargs) -> str:
         return "Error: minecraft-registry.json not found. Run scripts/generate-minecraft-registry.js to create it."
 
     try:
-        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        registry = json.loads(registry_path.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return f"Error reading registry: {e}"
 

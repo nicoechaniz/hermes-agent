@@ -434,13 +434,13 @@ class DaemonCraftAdapter(BasePlatformAdapter):
         # Dynamically discover all known bots from cast configs.
         # This is a live hook — no need to update .env files when bots change.
         def _discover_known_bots() -> set[str]:
-            import yaml
+            import hermes_yaml as yaml
             from pathlib import Path as _Path
             bots = set()
             casts_dir = _Path((self.config.extra or {}).get("casts_dir") or (_Path.home() / "Projects" / "DaemonCraft" / "agents" / "casts"))
             try:
                 for cf in sorted(casts_dir.glob("*.yaml")):
-                    cfg = yaml.safe_load(cf.read_text(encoding="utf-8")) or {}
+                    cfg = yaml.safe_load(cf.read_text(encoding="utf-8-sig")) or {}
                     for a in cfg.get("agents", []):
                         name = a.get("name", "")
                         if name:
