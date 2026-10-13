@@ -602,7 +602,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     plugins = _tools_mod("hermes_cli.plugins")
     tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
     try:
-        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+        return str(plugins.resolve_plugin_command_result(plugins.call_plugin_command_handler(handler, arg, command_context=None)) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -679,8 +679,10 @@ def _is_registry_command(base: str) -> bool:
 
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
-        with contextlib.suppress(Exception):
+        try:
             return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
+        except Exception:
+            return _ok(rid, {"type": "plugin", "output": "Plugin command failed."})
     return None
 
 
@@ -1150,8 +1152,8 @@ def _(rid, params: dict) -> dict:
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
             return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+        except Exception:
+            return _ok(rid, {"output": "Plugin command failed."})
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

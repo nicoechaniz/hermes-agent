@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures
 import dataclasses
+import inspect
 import json
 import os
 import re
@@ -44,6 +45,113 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def plugin_command_source_identity(source: Any) -> tuple:
+    """Scalar source identity used to detect mutation by gateway hooks."""
+    return tuple(getattr(source, name, None) for name in (
+        "platform", "user_id", "user_name", "user_id_alt", "chat_id", "chat_id_alt",
+        "chat_name", "chat_type", "thread_id", "guild_id", "scope_id", "profile",
+        "is_bot", "role_authorized", "delivered_via_upstream_relay",
+        "_authorization_profile_home",
+    ))
+
+
+def snapshot_plugin_command_origin(event: MessageEvent, adapter: Any, adapter_profile: Any) -> tuple:
+    """Capture private ingress provenance before mutable hooks; this is not authorization."""
+    source = event.source
+
+    def scalar(value: Any) -> Optional[str]:
+        return str(value) if type(value) in (str, int) else None
+
+    platform = scalar(getattr(getattr(source, "platform", None), "value", None)) or ""
+    raw = getattr(event, "raw_message", None)
+    event_metadata = getattr(event, "metadata", None)
+    metadata = event_metadata if isinstance(event_metadata, dict) else {}
+    event_message_id = getattr(event, "message_id", None)
+    event_platform_update_id: Any = getattr(event, "platform_update_id", None)
+    event_text = getattr(event, "text", "")
+    event_user_id = getattr(event, "user_id", None)
+    origin = "gateway"
+    if getattr(source, "delivered_via_upstream_relay", False) is True:
+        origin = "relay"
+    if getattr(source, "is_bot", False) is True:
+        origin = "bot"
+    if platform == "telegram" and raw is not None and any(
+        getattr(raw, name, None) is not None
+        for name in ("forward_origin", "forward_date", "forward_from", "forward_from_chat")
+    ):
+        origin = "forward"
+    if any(metadata.get(name) for name in ("is_echo", "echo", "projected", "projection")):
+        origin = "echo"
+    if getattr(event, "_hermes_startup_restore_replay", False) is True:
+        origin = "replay"
+
+    account_id = None
+    if platform == "telegram" and origin != "relay":
+        try:
+            account_id = scalar(getattr(getattr(adapter, "_bot", None), "id", None))
+        except (AttributeError, RuntimeError):
+            pass
+    values = {name: scalar(getattr(source, name, None)) for name in (
+        "user_id", "user_name", "chat_id", "chat_name", "chat_type", "thread_id", "guild_id",
+    )}
+    values.update(
+        platform=platform,
+        message_id=scalar(getattr(source, "message_id", None)) or scalar(event_message_id),
+        account_id=account_id,
+        adapter_id=(f"{type(adapter).__module__}.{type(adapter).__qualname__}" if adapter is not None else None),
+        adapter_profile=scalar(adapter_profile),
+        platform_update_id=(event_platform_update_id if type(event_platform_update_id) is int else None),
+        original_text=scalar(event_text),
+        origin_kind=origin,
+        is_bot=getattr(source, "is_bot", False) is True,
+    )
+    return (
+        plugin_command_source_identity(source),
+        bool(getattr(event, "internal", False)),
+        (event_user_id, event_message_id, event_platform_update_id),
+        values,
+        adapter,
+        adapter_profile,
+    )
+
+
+def build_plugin_command_context(
+    event: MessageEvent,
+    *,
+    origin: tuple,
+    adapter: Any,
+    adapter_profile: Any,
+    session_id: Optional[str] = None,
+):
+    """Build public provenance only after gateway authorization and access checks."""
+    from hermes_cli.plugins import PluginCommandContext
+
+    identity, internal, native_identity, values, original_adapter, original_profile = origin
+    if (
+        internal or event.internal
+        or adapter is not original_adapter or adapter_profile != original_profile
+        or identity != plugin_command_source_identity(event.source)
+        or native_identity != (event.user_id, event.message_id, event.platform_update_id)
+    ):
+        return None
+    return PluginCommandContext(
+        **values,
+        session_id=session_id if isinstance(session_id, str) else None,
+        authorized=True,
+        dispatched_text=event.text if isinstance(event.text, str) else None,
+        rewritten=event.text != values["original_text"],
+    )
+
+
+def is_plugin_slash_command(event: MessageEvent) -> bool:
+    from hermes_cli.commands import resolve_command
+    from hermes_cli.plugins import get_plugin_command_handler
+
+    command = event.get_command()
+    return bool(command and resolve_command(command) is None
+                and get_plugin_command_handler(command.replace("_", "-")) is not None)
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -590,7 +698,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, plugin_origin: tuple
     ) -> tuple[bool, Optional[str]]:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
@@ -612,6 +720,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
+
+        if is_plugin_slash_command(event):
+            handled, result, _ = await self._hm_dispatch_quick_and_plugin_commands(
+                event, source, _evt_cmd, _quick_key, plugin_origin)
+            return handled, result
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
@@ -691,12 +804,13 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, plugin_origin: tuple
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
+        _handled, _result = await self._hm_busy_slash_or_photo(
+            event, source, _quick_key, plugin_origin)
         if _handled:
             return _result
 
@@ -1045,7 +1159,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return t("gateway.quick_command.error", error=e)
 
     async def _hm_dispatch_quick_and_plugin_commands(
-        self, event: MessageEvent, source: SessionSource, command: Optional[str]
+        self, event: MessageEvent, source: SessionSource, command: Optional[str],
+        _quick_key: str, plugin_origin: tuple,
     ) -> tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
@@ -1080,9 +1195,18 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                from hermes_cli.plugins import call_plugin_command_handler, get_plugin_command_handler
+                normalized_command = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(normalized_command)
                 if plugin_handler:
+                    denied = self._check_slash_access(source, normalized_command)
+                    if denied is not None:
+                        return True, denied, command
+                    session_id = await asyncio.to_thread(self.session_store.peek_session_id, _quick_key)
+                    command_context = build_plugin_command_context(
+                        event, origin=plugin_origin, adapter=self._intake_adapter_for(source),
+                        adapter_profile=self._adapter_profile_for_source(source), session_id=session_id,
+                    )
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
                     # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
@@ -1092,16 +1216,20 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                     _plugin_context = build_session_context(source, self.config)
                     _plugin_context.session_key = self._session_key_for_source(source)
                     user_args = event.get_command_args().strip()
+                    from functools import partial
+                    invoke = partial(call_plugin_command_handler, plugin_handler, user_args,
+                                     command_context=command_context)
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):
-                            result = await plugin_handler(user_args)
+                            result = await invoke()
                         else:
-                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                            if asyncio.iscoroutine(result):
+                            result = await self._run_in_executor_with_context(invoke)
+                            if inspect.isawaitable(result):
                                 result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
+                return True, "Plugin command failed.", command
         return False, None, command
 
     def _hm_bundle_slash_rewrite(
@@ -1231,14 +1359,15 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         return _reply
 
     async def _hm_dispatch_idle_commands(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, plugin_origin: tuple
     ) -> tuple[bool, Optional[str]]:
         """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent."""
         _handled, _result, command, canonical = await self._hm_resolve_command(event, source, _quick_key)
         if not _handled:
             _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
         if not _handled:
-            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
+            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(
+                event, source, command, _quick_key, plugin_origin)
         if not _handled:
             # Skill-slash resolution is disk-bound (cold skill scan, skill file loads, the
             # unavailable-skill rglob over every skills dir) and uncached on a first hit; on a
@@ -1286,6 +1415,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        _ingress_source = event.source
+        plugin_origin = snapshot_plugin_command_origin(
+            event,
+            self._intake_adapter_for(_ingress_source),
+            self._adapter_profile_for_source(_ingress_source),
+        )
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1316,9 +1451,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if self._is_session_running(_quick_key):
             self._hm_evict_reaped_agent(_quick_key)
         if self._is_session_running(_quick_key):
-            return await self._hm_handle_running_session_message(event, source, _quick_key)
+            return await self._hm_handle_running_session_message(
+                event, source, _quick_key, plugin_origin)
 
-        _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+        _handled, _result = await self._hm_dispatch_idle_commands(
+            event, source, _quick_key, plugin_origin)
         if _handled:
             return _result
 
