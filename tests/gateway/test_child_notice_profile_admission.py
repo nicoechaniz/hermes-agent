@@ -192,7 +192,9 @@ async def test_process_watcher_follows_the_owning_profile(
             clock.setattr(asyncio, "sleep", tick)
             await rig.runner._run_process_watcher(leg.watcher)
         own_profile_surfaces = surface_a if leg.name == "a" else not surface_a
-        expected_admissions = int(leg.surfaced and path == "agent")
+        # Raw display remains governed by the owning profile. Agent injection
+        # additionally requires a foreground pin, which this worker lacks.
+        expected_admissions = 0
         expected_sends = 0
         if leg.surfaced and path == "raw":
             if mode == "all":
@@ -218,7 +220,7 @@ async def test_watch_events_follow_the_owning_profile(
         evt = _consumer_event(rig, leg, owner, path)
         rig.registry.completion_queue.put(evt)
         await rig.runner._drain_watch_notifications(rig.registry.completion_queue)
-        assert len(rig.admitted) == int(leg.surfaced)
+        assert rig.admitted == []
         assert rig.registry.completion_queue.empty()
 
     await _for_each_leg(rig, owner, surface_a, path, consume)
@@ -286,7 +288,8 @@ async def test_batched_completions_follow_the_owning_profile(
         leg.proc.output_buffer = "PROCESS_RESULT"
         evt = runner._build_process_completion_event(leg.watcher, leg.proc, leg.proc.id)
         companion = {**evt, "session_id": f"companion-{leg.name}-{leg.index}",
-                     "owner_task_id": "parent-owner", "output": "COMPANION_RESULT"}
+                     "owner_task_id": "parent-owner", "parent_session_id": leg.entry.session_id,
+                     "output": "COMPANION_RESULT"}
         boundary = path in {"batch_boundary_first", "batch_boundary_last"}
         if boundary:
             async with _async_profile_runtime_scope(rig.homes[leg.name]):
@@ -301,11 +304,13 @@ async def test_batched_completions_follow_the_owning_profile(
             runner._enqueue_process_completion_notification(text, event)
             for text, event in pair
         ))
-        assert outcomes[pair.index(("PROCESS_RESULT", evt))] is (True if leg.surfaced else None)
+        # A task handoff or opted-in child notice does not rewrite the durable
+        # worker pin. Only the independently parent-pinned companion may enter.
+        assert outcomes[pair.index(("PROCESS_RESULT", evt))] is None
         assert outcomes[pair.index(("COMPANION_RESULT", companion))] is (None if boundary else True)
         texts = "\n".join(event.text for event, _sid, _home in rig.admitted)
-        assert ("PROCESS_RESULT" in texts) is leg.surfaced
+        assert "PROCESS_RESULT" not in texts
         assert ("COMPANION_RESULT" in texts) is (not boundary)
-        assert len(rig.admitted) == (int(leg.surfaced) if boundary else 1)
+        assert len(rig.admitted) == (0 if boundary else 1)
 
     await _for_each_leg(rig, owner, surface_a, path, consume)

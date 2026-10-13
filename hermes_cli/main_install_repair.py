@@ -262,7 +262,13 @@ def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
 
         for platform in load_gateway_config().get_connected_platforms():
             entry = platform_registry.get(platform.value)
-            if entry is not None and not entry.check_fn():
+            if entry is None:
+                continue
+            try:
+                available = entry.check_fn()
+            except Exception:
+                available = False
+            if not available:
                 missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support.",
                                 entry.name))
     except Exception as exc:

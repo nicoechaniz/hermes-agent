@@ -1,10 +1,9 @@
 """Completion ownership for GatewayRunner: the session a pinned completion belongs to.
 
 Split out of ``gateway/run_notifications.py`` (itself split out of ``gateway/run.py``); bound onto
-``GatewayRunner`` through ``GatewayNotificationsMixin``. A completion may be pinned to a delegate
-child's execution transcript: ownership follows only ``model_config._delegate_from`` to the
-human-facing session, shared by delivery preflight and route resolution, and no route moves until
-that owner is proven.
+``GatewayRunner`` through ``GatewayNotificationsMixin``. A completion must belong to the foreground session or its verified compression
+continuation. Delegated provenance never grants authority to forward a worker
+completion; explicit human adoption of a worker remains a valid foreground route.
 """
 
 from __future__ import annotations
@@ -19,16 +18,26 @@ from gateway.session import SessionEntry
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-# Upper bound on the ``model_config._delegate_from`` chain walked by _resolve_async_delegation_session
-# when canonicalizing a delegate child to its human-facing gateway parent (#92611). Real nesting is
-# bounded far lower by delegation.max_spawn_depth (default 2); this only stops a corrupt chain from
-# turning one completion event into an unbounded run of sequential session reads. Exceeding it is
-# fail-closed, like every other unresolved provenance.
-_MAX_DELEGATE_PROVENANCE_HOPS = 16
-
-
 class GatewayNotificationOwnershipMixin:
     """Ownership proof and route resolution for pinned async and process completions."""
+
+    @staticmethod
+    def _is_delegated_completion_owner(row: dict) -> bool:
+        """Whether durable worker provenance makes a row ineligible to claim a route.
+
+        Peer refresh can replace ``source`` with a transport value while the
+        delegation marker survives worker compression.  A bare parent link is
+        deliberately not a worker marker: normal compression also has one.
+        """
+        if row.get("source") == "subagent":
+            return True
+        config = row.get("model_config") or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (TypeError, ValueError):
+                return False
+        return isinstance(config, dict) and bool(config.get("_delegate_from"))
 
     async def _resolve_compression_lineage_target(
         self, session_db: Any, session_entry: Optional[SessionEntry], pinned_session_id: str,
@@ -39,6 +48,8 @@ class GatewayNotificationOwnershipMixin:
             if not target_session_id or target_session_id == pinned_session_id:
                 return "retry", None  # Rotation may not have published its continuation yet.
             tip_row = await session_db.get_session(target_session_id)
+            if tip_row is not None and self._is_delegated_completion_owner(tip_row):
+                return "terminal", None
             if tip_row is None or tip_row.get("ended_at"):
                 return "retry", None
             if session_entry is None or session_entry.session_id in {pinned_session_id, target_session_id}:
@@ -64,52 +75,47 @@ class GatewayNotificationOwnershipMixin:
         return "terminal", None
 
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
-        """Nonmutating delegation proof shared by preflight and route resolution.
-
-        A current route is an explicit ownership boundary, not a route to repair.
-        Generic parent pointers also describe compression and branches; only
-        ``_delegate_from`` authorizes walking out of an execution transcript.
-        """
+        """Verify this execution owns the foreground; never forward a worker completion."""
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self)._session_db
         if session_db is None:
             return "retry", session_id, None
-        seen = set()
-        for hops in range(_MAX_DELEGATE_PROVENANCE_HOPS + 1):
-            if session_id in seen:
-                return "terminal", session_id, None
-            seen.add(session_id)
-            try:
-                row = await session_db.get_session(session_id)
-            except Exception:
-                logger.debug("Completion ownership lookup failed for %s", session_id, exc_info=True)
-                return "retry", session_id, None
-            if row is None:
-                return "terminal", session_id, None
-            # User closure is a boundary at EVERY hop, including execution rows.
-            # Ordinary delegate completion may still follow provenance to its owner.
-            if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
-                return "terminal", session_id, row
-            if session_id == current_session_id:
-                return "deliver", session_id, row
-            config = row.get("model_config")
-            try:
-                if isinstance(config, str):
-                    config = json.loads(config)
-            except (TypeError, ValueError):
-                return "terminal", session_id, None
-            if config is None:
-                config = {}
-            if not isinstance(config, dict):
-                return "terminal", session_id, None
-            if "_delegate_from" not in config:
-                verdict = "terminal" if row.get("source") == "subagent" else "deliver"
-                return verdict, session_id, row
-            parent = config["_delegate_from"]
-            if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:
-                return "terminal", session_id, None
-            session_id = parent
-        return "terminal", session_id, None
+        try:
+            row = await session_db.get_session(session_id)
+        except Exception:
+            logger.debug("Completion ownership lookup failed for %s", session_id, exc_info=True)
+            return "retry", session_id, None
+        if row is None:
+            return "terminal", session_id, None
+        if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
+            return "terminal", session_id, row
+        if session_id == current_session_id:
+            return "deliver", session_id, row
+        config = row.get("model_config")
+        try:
+            if isinstance(config, str):
+                config = json.loads(config)
+        except (TypeError, ValueError):
+            return "terminal", session_id, None
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            return "terminal", session_id, None
+        if "_delegate_from" in config and (
+            not isinstance(config["_delegate_from"], str) or not config["_delegate_from"].strip()
+        ):
+            return "terminal", session_id, None
+        if self._is_delegated_completion_owner(row):
+            if row.get("ended_at") and row.get("end_reason") == "compression":
+                try:
+                    tip_id = await session_db.get_compression_tip(session_id)
+                    tip = await session_db.get_session(tip_id) if tip_id and tip_id != session_id else None
+                except Exception:
+                    return "retry", session_id, None
+                if tip is not None and not self._is_delegated_completion_owner(tip):
+                    return "deliver", session_id, row
+            return "terminal", session_id, row
+        return "deliver", session_id, row
 
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str, proven_session_id: str = "",
@@ -122,10 +128,10 @@ class GatewayNotificationOwnershipMixin:
         closed; the result stays in the delegation records. An owner that cannot be confirmed right
         now (``retry``) sends the completions admitted with the event back to the delivery queue.
 
-        A pinned *delegate* row is likewise canonicalized to its human-facing parent through
+        A pinned delegated row cannot forward to another foreground through
         ``model_config._delegate_from`` before any route check or mutation (#92611). Unresolvable
         provenance — a cycle, a missing parent, a malformed config, or a chain longer than
-        ``_MAX_DELEGATE_PROVENANCE_HOPS`` — drops the injection rather than falling back to the
+        the foreground ownership boundary — drops the injection rather than falling back to the
         current route entry. That is deliberate: routing an internal child's output into a session
         whose ownership was never verified is the same class of defect this canonicalization fixes,
         and the completion remains readable in the delegation records either way.

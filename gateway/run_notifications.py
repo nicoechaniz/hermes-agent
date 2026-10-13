@@ -127,8 +127,14 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
-    _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
-    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
+    # One admitted event cannot authorize another physical owner's payload just
+    # because both inherited the same chat route (aea0c219, 90ee7fe5).
+    _COMPLETION_BATCH_KEY_FIELDS = (
+        "parent_session_id", "session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id",
+    )
+    _ASYNC_GROUP_KEY_FIELDS = (
+        "session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[2:],
+    )
 
     @dataclasses.dataclass
     class _UpdatePaths:
@@ -1033,6 +1039,14 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 synth_text = _format_gateway_process_notification(evt)
                 if not synth_text:
                     continue
+                parent = str(evt.get("parent_session_id") or "").strip()
+                if parent:
+                    verdict = await self._classify_completion_target(parent, str(evt.get("session_key") or ""))
+                    if verdict == "terminal":
+                        continue  # A worker pin cannot acquire the foreground through a watch event.
+                    if verdict == "retry":
+                        completion_queue.put(evt)
+                        continue
                 try:
                     delivered = await self._inject_watch_notification(synth_text, evt)
                 except Exception:
@@ -1402,7 +1416,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(
-                    "Async delegation %s targets permanently-gone session %s; "
+                    "Async delegation %s targets ineligible gateway session %s; "
                     "terminally dropping delivery (result remains in the delegation records).",
                     claim.delegation_id or "<legacy>", parent_session_id,
                 )
@@ -1411,8 +1425,8 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             else:
                 logger.warning(
                     "Background process %s completion targets "
-                    "permanently-gone session %s (user boundary such as "
-                    "/new); dropping notification (output remains available via process(action='log')).",
+                    "ineligible gateway session %s (closed boundary or non-foreground delegated "
+                    "owner); dropping notification (output remains available via process(action='log')).",
                     evt.get("session_id") or "<unknown>", parent_session_id,
                 )
             claim.proceed = False

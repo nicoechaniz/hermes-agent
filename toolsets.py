@@ -171,6 +171,10 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
+    "altermundi": _ts(
+        "Read-only access to AlterMundi collective memory over anyVPN",
+        ["altermundi_search", "altermundi_doc"],
+    ),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
