@@ -434,11 +434,11 @@ async def test_plugin_context_does_not_claim_human_origin(discovered_command, mo
     if origin == "internal":
         event.internal = True
     elif origin == "identity-rewrite":
-        def rewrite(name, **kwargs):
+        async def rewrite(name, **kwargs):
             if name == "pre_gateway_dispatch":
                 kwargs["event"].source.user_id = "other"
             return []
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", rewrite)
+        monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", rewrite)
     elif origin == "bot":
         event.source.is_bot = True
     elif origin == "forward":
@@ -462,8 +462,9 @@ async def test_plugin_context_preserves_original_command(discovered_command, mon
     runner, received = discovered_command
     event = _make_event("/status original  args")
     if rewrite == "prehook":
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kw:
-            [{"action": "rewrite", "text": "/context_probe rewritten"}] if name == "pre_gateway_dispatch" else [])
+        async def rewrite_hook(name, **kw):
+            return [{"action": "rewrite", "text": "/context_probe rewritten"}] if name == "pre_gateway_dispatch" else []
+        monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", rewrite_hook)
     elif rewrite == "command-hook":
         runner.hooks.emit_collect.return_value = [{"decision": "rewrite", "command_name": "context_probe", "raw_args": "rewritten"}]
     else:
@@ -566,11 +567,11 @@ async def test_discovered_mixed_handlers_and_actor_isolation(discovered_command,
 async def test_plugin_context_rejects_transport_rewrite(discovered_command, monkeypatch):
     runner, received = discovered_command
     original_adapter = runner.adapters[Platform.TELEGRAM]
-    def rewrite(name, **kwargs):
+    async def rewrite(name, **kwargs):
         if name == "pre_gateway_dispatch":
             runner.adapters[Platform.TELEGRAM] = MagicMock()
         return []
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", rewrite)
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", rewrite)
     assert await runner._handle_message(_make_event("/context_probe approve")) == "plugin ran"
     assert runner.adapters[Platform.TELEGRAM] is not original_adapter
     assert received[0][1] is None

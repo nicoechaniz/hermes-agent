@@ -94,7 +94,13 @@ class GatewayNotificationOwnershipMixin:
             return "deliver", session_id, row
         if self._is_delegated_completion_owner(row):
             if row.get("ended_at") and row.get("end_reason") == "compression":
-                return "deliver", session_id, row
+                try:
+                    tip_id = await session_db.get_compression_tip(session_id)
+                    tip = await session_db.get_session(tip_id) if tip_id and tip_id != session_id else None
+                except Exception:
+                    return "retry", session_id, None
+                if tip is not None and not self._is_delegated_completion_owner(tip):
+                    return "deliver", session_id, row
             return "terminal", session_id, row
         return "deliver", session_id, row
 

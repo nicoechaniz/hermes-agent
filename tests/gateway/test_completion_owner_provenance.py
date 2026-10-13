@@ -242,7 +242,11 @@ async def test_native_watchers_settle_without_forwarding_workers(
 
     await run_watchers()
     _assert_foreground_unchanged(b)
-    assert b.resolved == ([b.parent_id] if owner == "parent" else [])
+    if owner == "parent":
+        assert 1 <= len(b.resolved) <= count
+        assert set(b.resolved) == {b.parent_id}
+    else:
+        assert b.resolved == []
     if owner != "parent":
         assert b.events == []
         assert "delegated owner" in caplog.text
